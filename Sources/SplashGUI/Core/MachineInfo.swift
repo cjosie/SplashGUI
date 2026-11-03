@@ -186,6 +186,67 @@ enum MachineInfo {
             + "~/.cache/huggingface/hub/models--\(entry.owner)--\(entry.hfRepo) and start again to re-pull it."
     }
 
+    // The "GGUF" magic at the head of a file.
+    static func hasGGUFMagic(_ url: URL) -> Bool {
+        guard let h = try? FileHandle(forReadingFrom: url),
+              let head = try? h.read(upToCount: 4) else { return false }
+        return head == Data("GGUF".utf8)
+    }
+
+    // Whether a saved local entry's path is something the engine can serve: a GGUF file
+    // (magic, per install/local.py) or a directory whose root holds a GGUF or an MLX model
+    // (config.json + safetensors). A hint for the UI only — the engine has the last word.
+    static func localLooksLikeModel(path: String) -> Bool {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: path, isDirectory: &isDir) else { return false }
+        if !isDir.boolValue { return hasGGUFMagic(URL(fileURLWithPath: path)) }
+        guard let names = try? fm.contentsOfDirectory(atPath: path) else { return false }
+        if names.contains(where: { $0.lowercased().hasSuffix(".gguf") }) { return true }
+        return names.contains("config.json")
+            && names.contains(where: { $0.lowercased().hasSuffix(".safetensors") })
+    }
+
+    // Bytes a local entry loads: the GGUF file (every part of a split GGUF lies beside it) or
+    // the model files at a directory's root. Stat sizes only, so no cache is needed.
+    static func localWeightsSize(path: String) -> Int? {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: path, isDirectory: &isDir) else { return nil }
+        // HF snapshot files are symlinks into the blob store; stat the resolved file, and
+        // count only regular files so a directory entry never adds a bogus link size.
+        func size(_ p: String) -> Int {
+            let url = URL(fileURLWithPath: p).resolvingSymlinksInPath()
+            guard let vals = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+                  vals.isRegularFile == true else { return 0 }
+            return vals.fileSize ?? 0
+        }
+        var total = 0
+        if isDir.boolValue {
+            for name in (try? fm.contentsOfDirectory(atPath: path)) ?? []
+            where name.lowercased().hasSuffix(".gguf") || name.lowercased().hasSuffix(".safetensors") {
+                total += size((path as NSString).appendingPathComponent(name))
+            }
+        } else if let stem = splitGGUFStem(of: (path as NSString).lastPathComponent),
+                  let dir = try? fm.contentsOfDirectory(atPath: (path as NSString).deletingLastPathComponent) {
+            let parent = (path as NSString).deletingLastPathComponent
+            for name in dir where splitGGUFStem(of: name) == stem {
+                total += size((parent as NSString).appendingPathComponent(name))
+            }
+        } else {
+            total = size(path)
+        }
+        return total > 0 ? total : nil
+    }
+
+    // The model a split GGUF part belongs to: NAME from NAME-00001-of-00003.gguf; nil for a
+    // whole file (install/local.py's SPLIT_NAME rule, same shape as its part naming).
+    private static func splitGGUFStem(of name: String) -> String? {
+        guard let r = name.range(of: #"-\d+-of-\d+\.gguf$"#, options: .regularExpression)
+        else { return nil }
+        return String(name[..<r.lowerBound])
+    }
+
     // Sums the real bytes under a directory, following symlinks. The Splash model path is a
     // symlink into the HF snapshot and its files are symlinks into the content-addressed blob
     // store, so the default enumerator (which treats symlinks as non-regular) sees nothing.

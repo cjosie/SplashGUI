@@ -294,6 +294,9 @@ final class AppModel: ObservableObject {
             if line.contains("model download or verification failed") {
                 return "The model download failed partway. Check the connection and try again. Partially downloaded files resume."
             }
+            if line.contains("cannot prepare") || line.contains("local model preparation failed") {
+                return "The engine refused the local model files. Check the entry's path and projector; the reason is in the log below."
+            }
             if line.lowercased().contains("out of memory") || line.lowercased().contains("not enough memory") {
                 return "Not enough free memory to load this model. Close other apps, or lower Max memory in Advanced."
             }
@@ -332,6 +335,64 @@ final class AppModel: ObservableObject {
     // The catalog row for the selected model, nil for a Custom ID.
     var catalogEntry: CatalogModel? {
         CatalogModel.catalog.first { $0.id == config.run.modelID }
+    }
+
+    // The user's saved entry for the selected model (Hub or local), nil for a catalog row or
+    // unsaved custom text.
+    var savedEntry: SavedModel? {
+        config.savedModels.first { $0.id == config.run.modelID }
+    }
+
+    // The local entry being served, if the selection is one.
+    var localEntry: SavedModel? {
+        guard let e = savedEntry, e.isLocal else { return nil }
+        return e
+    }
+
+    // Add or update the saved entry for an ID — a duplicate ID updates in place and keeps its
+    // position. False when the engine would refuse the ID as no model ID at all.
+    @discardableResult
+    func saveModel(id: String, label: String, path: String = "", mmproj: String = "") -> Bool {
+        let trimmed = id.trimmingCharacters(in: .whitespaces)
+        guard SavedModel.validID(trimmed) else { return false }
+        let name = label.trimmingCharacters(in: .whitespaces)
+        let entry = SavedModel(id: trimmed, label: name.isEmpty ? trimmed : name,
+                               path: path, mmproj: mmproj)
+        if let i = config.savedModels.firstIndex(where: { $0.id == trimmed }) {
+            config.savedModels[i] = entry
+        } else {
+            config.savedModels.append(entry)
+        }
+        return true
+    }
+
+    // Removing a saved entry leaves its ModelProfile (and grantedAuto) in place, exactly like
+    // a catalog row you stop showing: re-adding by the same ID restores the tuned settings.
+    func removeSavedModel(id: String) {
+        config.savedModels.removeAll { $0.id == id }
+    }
+
+    // Renames a saved entry in place, as typed (the Run tab's field writes every keystroke).
+    func renameSavedModel(id: String, to label: String) {
+        guard let i = config.savedModels.firstIndex(where: { $0.id == id }) else { return }
+        config.savedModels[i].label = label
+    }
+
+    // The engine's local-mode refusals, applied before the launch so the message lands in the
+    // footer instead of a process that dies in the log: a missing file, and the projector +
+    // language-only pair the engine's parser rejects.
+    nonisolated static func localStartBlocker(path: String, mmproj: String,
+                                              languageOnly: Bool) -> String? {
+        if !FileManager.default.fileExists(atPath: path) {
+            return "The local model path no longer exists: \(path). Re-point it with Add local model."
+        }
+        if !mmproj.isEmpty, !FileManager.default.fileExists(atPath: mmproj) {
+            return "The vision projector no longer exists: \(mmproj). Re-attach it or clear it."
+        }
+        if !mmproj.isEmpty, languageOnly {
+            return "Language only refuses a vision projector — the engine rejects the pair. Turn Language only off or detach the projector."
+        }
+        return nil
     }
 
     // Switching models swaps profiles: the model being left keeps its current settings, the model
@@ -407,7 +468,7 @@ final class AppModel: ObservableObject {
         // with announce, reports it. The full Hub ID stays the profile key and the /status name.
         let apiName = config.run.servedModelName.isEmpty ? config.run.modelID : config.run.servedModelName
         let ctx = ClientConfigContext(client: client, modelID: apiName,
-                                      label: catalogEntry?.label ?? config.run.modelID,
+                                      label: catalogEntry?.label ?? savedEntry?.label ?? config.run.modelID,
                                       port: config.run.port, contextTokens: tokens,
                                       inputModalities: modalities,
                                       sampling: config.sampling,
@@ -415,13 +476,14 @@ final class AppModel: ObservableObject {
         return ClientConfigs.text(for: ctx)
     }
 
-    // Any ID outside the catalog reads as Custom… so the popup never goes blank on a hand-typed ID.
+    // Any ID outside the catalog and the saved list reads as Custom… so the popup never goes
+    // blank on a hand-typed ID.
     var modelPickerSelection: Binding<String> {
         Binding(
-            get: { self.catalogEntry?.id ?? "custom" },
+            get: { self.catalogEntry?.id ?? self.savedEntry?.id ?? "custom" },
             set: { newValue in
                 if newValue != "custom" { self.selectModelID(newValue) }
-                else if self.catalogEntry != nil { self.selectModelID("") }
+                else if self.catalogEntry != nil || self.savedEntry != nil { self.selectModelID("") }
             }
         )
     }
@@ -445,9 +507,12 @@ final class AppModel: ObservableObject {
 
     // Resolved run profile for the current model, using the catalog weight estimate when the
     // model hasn't downloaded yet. Cheap: weights size is cached, Metal ceiling read once.
+    // Local entries size from their files (and get no Auto profile — the arch gate returns
+    // nil for a non-catalog ID and the engine sizes itself).
     var currentAutoProfile: AutoProfile? {
         let id = config.run.modelID
-        let weights = catalogEntry?.weightsBytes ?? MachineInfo.cachedModelSize(id)
+        let weights = localEntry.map { MachineInfo.localWeightsSize(path: $0.path) }
+            ?? catalogEntry?.weightsBytes ?? MachineInfo.cachedModelSize(id)
         return MachineInfo.autoProfile(modelID: id, languageOnly: config.run.languageOnly, weightsBytes: weights)
     }
 
@@ -534,6 +599,13 @@ final class AppModel: ObservableObject {
             startBlocked(mismatch)
             return
         }
+        let local = localEntry
+        if let entry = local,
+           let blocked = Self.localStartBlocker(path: entry.path, mmproj: entry.mmproj,
+                                                languageOnly: config.run.languageOnly) {
+            startBlocked(blocked)
+            return
+        }
         Task {
             let probe = await client.probePort()
             if probe.open {
@@ -571,7 +643,10 @@ final class AppModel: ObservableObject {
                 var run = self.config.run.effective(using: profile)
                 run.clearingUnsupportedMemoryKnobs(forModelID: self.config.run.modelID)
                 try self.server.launch(config: run,
-                                       revision: self.catalogEntry?.revision)
+                                       revision: self.catalogEntry?.revision,
+                                       local: local.map {
+                                           SplashServer.LocalLaunch(modelDir: $0.path, mmproj: $0.mmproj)
+                                       })
                 self.launchedRunConfig = self.config.run
                 if let pid = self.server.childPID {
                     AppModel.serverKillPID = pid

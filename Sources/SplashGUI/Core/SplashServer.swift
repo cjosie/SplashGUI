@@ -91,6 +91,13 @@ final class SplashServer {
         let prefixArgs: [String]
     }
 
+    // The local files a saved local entry serves. SplashServer stays entry-free: it builds
+    // argv from these two strings and knows nothing about SavedModel.
+    struct LocalLaunch {
+        let modelDir: String
+        let mmproj: String    // "" = none
+    }
+
     static func resolveLaunch() -> LaunchTarget? {
         let py = EngineInstaller.pythonPath
         if EngineInstaller.isInstalled {
@@ -105,7 +112,7 @@ final class SplashServer {
         return nil
     }
 
-    func launch(config: RunConfig, revision: String?) throws {
+    func launch(config: RunConfig, revision: String?, local: LocalLaunch? = nil) throws {
         guard process == nil else { return }
         guard let target = Self.resolveLaunch() else {
             throw ServerError.missingExecutable
@@ -113,7 +120,7 @@ final class SplashServer {
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: target.executable)
-        p.arguments = target.prefixArgs + Self.buildArguments(for: config, revision: revision)
+        p.arguments = target.prefixArgs + Self.buildArguments(for: config, revision: revision, local: local)
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
         env["TERM"] = "dumb"
@@ -187,14 +194,23 @@ final class SplashServer {
         }
     }
 
-    static func buildArguments(for config: RunConfig, revision: String? = nil) -> [String] {
+    static func buildArguments(for config: RunConfig, revision: String? = nil,
+                               local: LocalLaunch? = nil) -> [String] {
         var args = ["serve", "--model", config.modelID, "--port", String(config.port)]
+        if let local {
+            // Local serving: --model stays the ID the API reports, --model-dir names the files.
+            // The engine's parser refuses --mmproj with --language-only, so the projector rides
+            // only when vision is on (start() blocks that pair before it gets here anyway).
+            args += ["--model-dir", local.modelDir]
+            if !local.mmproj.isEmpty && !config.languageOnly { args += ["--mmproj", local.mmproj] }
+        }
         // LAN serving: bind every IPv4 interface. The engine accepts IP-address Host headers
         // by default, so no --allowed-host is needed for clients connecting by address.
         if config.lanAccess { args += ["--host", "0.0.0.0"] }
         // A catalog entry pins an exact HF commit, so the pull is reproducible and a later
-        // re-upload under the same name cannot change what this Mac loads.
-        if let revision, !revision.isEmpty { args += ["--revision", revision] }
+        // re-upload under the same name cannot change what this Mac loads. The engine refuses
+        // --revision with --model-dir, so a local launch never carries one.
+        if let revision, !revision.isEmpty, local == nil { args += ["--revision", revision] }
         if config.maxContext.lowercased() != "auto", !config.maxContext.isEmpty {
             args += ["--max-context", config.maxContext]
         }

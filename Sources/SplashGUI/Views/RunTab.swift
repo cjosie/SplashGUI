@@ -1,7 +1,9 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct RunTab: View {
     @EnvironmentObject var model: AppModel
+    @State private var showAddLocal = false
 
     var body: some View {
         // The server controls (Start/Stop, port, chips, context slot) live in the custom
@@ -64,6 +66,9 @@ struct RunTab: View {
         .safeAreaInset(edge: .bottom) {
             logPane
         }
+        .sheet(isPresented: $showAddLocal) {
+            AddLocalModelSheet().environmentObject(model)
+        }
     }
 
     // The two columns are separate computed properties: inline they push the GridRow's
@@ -75,52 +80,35 @@ struct RunTab: View {
                 Text("Model")
                     .fixedSize(horizontal: true, vertical: false)
                 Picker("Model", selection: model.modelPickerSelection) {
-                    ForEach(CatalogModel.catalog) { m in
-                        HStack {
-                            Text(m.label)
-                            Spacer()
-                            Text(m.id == "custom" ? "" : m.id)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }.tag(m.id)
+                    Section("Splash suggested") {
+                        ForEach(CatalogModel.catalog.filter { $0.id != "custom" }) { m in
+                            modelRow(label: m.label, id: m.id)
+                        }
                     }
+                    if !model.config.savedModels.isEmpty {
+                        Section("Saved") {
+                            ForEach(model.config.savedModels) { s in
+                                modelRow(label: s.label, id: s.id)
+                            }
+                        }
+                    }
+                    Text("Custom…").tag("custom")
                 }
                 .labelsHidden()
             }
             .help("Hub ID, owner/repo[:variant], shown so you know exactly whose upload you're pulling. The DFlash2 draft model pairs automatically. First start downloads weights and prepares them; later starts map from disk. Each model keeps its own sampling and context settings, saved under its full ID including the :variant; switching models swaps them in, and a model you have not tuned starts on its card's sampling.")
-            if model.catalogEntry == nil {
-                HStack(spacing: 6) {
-                    Text(model.config.run.modelID.isEmpty
-                        ? "no model ID set; pick Custom… and type owner/repo[:variant]"
-                        : model.config.run.modelID)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                TextField("owner/repo[:variant]", text: model.customIDBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
+            if model.catalogEntry == nil, model.savedEntry == nil {
+                customRows
+            }
+            if let saved = model.savedEntry {
+                savedRows(saved)
             }
             if let entry = model.catalogEntry {
-                HStack(spacing: 6) {
-                    Image(systemName: entry.onDisk ? "checkmark.circle.fill" : "arrow.down.circle")
-                        .foregroundStyle(entry.onDisk ? Color.green : Color.orange)
-                    Text(entry.onDisk
-                         ? "installed, maps from disk"
-                         : "not installed, first start pulls it from Hugging Face")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("· \(entry.note)").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .help((entry.downloadURL.map { "pulls, pinned to commit \($0). " } ?? "")
-                      + "serve --revision pins the download to this exact commit, so a later re-upload under the same file name cannot change what loads. The catalog also carries its sha256; the app checks it against the digest Splash records before starting.")
-                if !entry.fitsThisMac {
-                    Label("too large for this Mac's memory, expected to fail",
-                          systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
+                catalogStatusRow(entry)
+            } else if let local = model.localEntry {
+                localStatusRow(local)
+            } else if let saved = model.savedEntry, !saved.isLocal {
+                hubSavedStatusRow(saved)
             }
             Toggle(isOn: $model.config.run.auto) {
                 HStack(spacing: 6) {
@@ -176,6 +164,138 @@ struct RunTab: View {
                     .help("RAM cache of the KV blocks this block-sparse model reads from the SSD, e.g. 1200M; never below the engine's floor. Blank keeps the floor. Restart to apply.")
             }
         }
+    }
+
+    private func modelRow(label: String, id: String) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text(id)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .tag(id)
+    }
+
+    // The Custom… slot: the typed ID, the field, and the two ways to keep a model.
+    private var customRows: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(model.config.run.modelID.isEmpty
+                     ? "no model ID set; pick Custom… and type owner/repo[:variant]"
+                     : model.config.run.modelID)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            TextField("owner/repo[:variant]", text: model.customIDBinding)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+            HStack(spacing: 6) {
+                if SavedModel.validID(model.config.run.modelID) {
+                    Button("Save to list") { saveCustomToList() }
+                        .help("Keeps this ID in the picker's Saved section, so switching away and back restores it with its own settings — no retyping.")
+                }
+                Button("Add local model…") { showAddLocal = true }
+                    .help("Serve a GGUF file or model directory already on this Mac — no Hugging Face download.")
+                Spacer()
+            }
+        }
+    }
+
+    private func saveCustomToList() {
+        let id = model.config.run.modelID
+        let repo = id.split(separator: ":").first.map(String.init) ?? id
+        let label = repo.split(separator: "/").last.map(String.init) ?? repo
+        model.saveModel(id: id, label: label)
+    }
+
+    // A selected saved entry: rename inline, or remove from the list (its settings stay
+    // saved under the model ID, exactly like a catalog row you stop showing).
+    private func savedRows(_ saved: SavedModel) -> some View {
+        HStack(spacing: 6) {
+            TextField("Name", text: savedLabelBinding(saved.id))
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 220)
+            Button("Remove") { model.removeSavedModel(id: saved.id) }
+                .help("Removes it from the Saved list. Its sampling and serve settings stay saved under the model ID; re-adding it restores them.")
+            Spacer()
+        }
+    }
+
+    private func savedLabelBinding(_ id: String) -> Binding<String> {
+        Binding(
+            get: { model.config.savedModels.first { $0.id == id }?.label ?? "" },
+            set: { model.renameSavedModel(id: id, to: $0) }
+        )
+    }
+
+    private func catalogStatusRow(_ entry: CatalogModel) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: entry.onDisk ? "checkmark.circle.fill" : "arrow.down.circle")
+                    .foregroundStyle(entry.onDisk ? Color.green : Color.orange)
+                Text(entry.onDisk
+                     ? "installed, maps from disk"
+                     : "not installed, first start pulls it from Hugging Face")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("· \(entry.note)").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            }
+            .help((entry.downloadURL.map { "pulls, pinned to commit \($0). " } ?? "")
+                  + "serve --revision pins the download to this exact commit, so a later re-upload under the same file name cannot change what loads. The catalog also carries its sha256; the app checks it against the digest Splash records before starting.")
+            if !entry.fitsThisMac {
+                Label("too large for this Mac's memory, expected to fail",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    // A saved Hub entry reads its installed state off the same disk layout as a catalog row;
+    // it tracks the repository's default branch (no revision pin in v1).
+    private func hubSavedStatusRow(_ saved: SavedModel) -> some View {
+        let onDisk = MachineInfo.weightsDir(for: saved.id) != nil
+        return HStack(spacing: 6) {
+            Image(systemName: onDisk ? "checkmark.circle.fill" : "arrow.down.circle")
+                .foregroundStyle(onDisk ? Color.green : Color.orange)
+            Text(onDisk
+                 ? "installed, maps from disk"
+                 : "not installed, first start pulls it from Hugging Face")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .help("Saved Hub ID, pulled from the repository's default branch. Its full ID and settings stay under \(saved.id).")
+    }
+
+    private func localStatusRow(_ local: SavedModel) -> some View {
+        let status = Self.localStatus(local)
+        return HStack(spacing: 6) {
+            Image(systemName: status.ok ? "checkmark.circle.fill" : "exclamationmark.triangle")
+                .foregroundStyle(status.ok ? Color.green : Color.red)
+            Text(status.text)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer()
+        }
+        .help("Served from disk with serve --model-dir; the API reports \(local.id). No Hugging Face download. A GGUF serves text only unless a vision projector is attached; the DFlash2 draft pairs from the Hugging Face cache when one is recorded for the family.")
+    }
+
+    // One line about a local entry's files: "local · <path> · <size>", or what is wrong.
+    static func localStatus(_ local: SavedModel) -> (ok: Bool, text: String) {
+        guard FileManager.default.fileExists(atPath: local.path) else {
+            return (false, "local file not found: \(local.path)")
+        }
+        guard MachineInfo.localLooksLikeModel(path: local.path) else {
+            return (false, "not a GGUF file or model directory: \(local.path)")
+        }
+        var text = "local · \(local.path) · \(MachineInfo.gb(MachineInfo.localWeightsSize(path: local.path)))"
+        if !local.mmproj.isEmpty { text += " · + projector" }
+        return (true, text)
     }
 
     private var serverColumn: some View {
@@ -323,5 +443,157 @@ struct LabeledField: View {
                 .frame(width: width)
                 .font(.system(.body, design: .monospaced))
         }
+    }
+}
+
+// The Add-local-model form: pick the GGUF file or model directory already on disk, name it,
+// and keep it in the Saved list. Paths are stored as plain strings — the app is not sandboxed.
+struct AddLocalModelSheet: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var path = ""
+    @State private var label = ""
+    @State private var apiID = ""
+    @State private var mmproj = ""
+    // Typing in Name or API ID stops the auto-fill from the file name; re-picking a file
+    // resets both.
+    @State private var labelEdited = false
+    @State private var apiEdited = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add local model").font(.headline)
+            HStack(spacing: 6) {
+                Text("Model")
+                    .fixedSize(horizontal: true, vertical: false)
+                Text(path.isEmpty ? "no file or directory picked" : path)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(path.isEmpty ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Button("Choose…") { chooseModel() }
+                Spacer()
+            }
+            HStack(spacing: 6) {
+                Text("Projector")
+                    .fixedSize(horizontal: true, vertical: false)
+                Text(mmproj.isEmpty ? "none (a GGUF serves text only)" : mmproj)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(mmproj.isEmpty ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if mmproj.isEmpty {
+                    Button("Attach…") { chooseProjector() }
+                } else {
+                    Button("Detach") { mmproj = "" }
+                }
+                Spacer()
+            }
+            .help("A GGUF vision projector file (mmproj-*.gguf) that lets a GGUF target serve images. MLX directories carry their vision tower in the checkpoint and need none.")
+            LabeledField("Name", labelBinding, width: 300)
+            LabeledField("API ID", apiBinding, width: 300)
+                .help("The model name the API reports, like a Hub ID. It defaults to local/<file name>; clients address the model by it.")
+            statusLine
+            HStack(spacing: 6) {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Add") { add() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canAdd)
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+    }
+
+    private var statusLine: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !path.isEmpty {
+                let status = RunTab.localStatus(SavedModel(id: apiID, label: label, path: path, mmproj: mmproj))
+                Text(status.text)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(status.ok ? Color.secondary : Color.red)
+            }
+            if !SavedModel.validID(apiID) {
+                Text("API ID must be owner/repo[:variant], e.g. local/my-model:Q4_K_M")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            if !mmproj.isEmpty, model.config.run.languageOnly {
+                Text("Language only is on, which refuses a projector — turn it off on the Run tab or detach it.")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            if canAdd, model.config.savedModels.contains(where: { $0.id == apiID }) {
+                Text("An entry with this ID already exists; Add updates its path and name.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private var canAdd: Bool {
+        !path.isEmpty && !label.trimmingCharacters(in: .whitespaces).isEmpty
+            && SavedModel.validID(apiID)
+            && MachineInfo.localLooksLikeModel(path: path)
+    }
+
+    private var labelBinding: Binding<String> {
+        Binding(
+            get: { label },
+            set: { labelEdited = true; label = $0 }
+        )
+    }
+
+    private var apiBinding: Binding<String> {
+        Binding(
+            get: { apiID },
+            set: { apiEdited = true; apiID = $0 }
+        )
+    }
+
+    private func chooseModel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        if let gguf = UTType(filenameExtension: "gguf") {
+            panel.allowedContentTypes = [.directory, gguf]
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        path = url.path
+        if !labelEdited {
+            label = Self.defaultLabel(forPath: path)
+        }
+        if !apiEdited {
+            apiID = SavedModel.localID(forPath: path)
+        }
+    }
+
+    private func chooseProjector() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if let gguf = UTType(filenameExtension: "gguf") {
+            panel.allowedContentTypes = [gguf]
+        }
+        if panel.runModal() == .OK, let url = panel.url {
+            mmproj = url.path
+        }
+    }
+
+    // The file or directory name without its .gguf ending — what the user calls this model.
+    static func defaultLabel(forPath path: String) -> String {
+        var name = (path as NSString).lastPathComponent
+        if name.lowercased().hasSuffix(".gguf") { name = String(name.dropLast(".gguf".count)) }
+        return name
+    }
+
+    private func add() {
+        guard model.saveModel(id: apiID, label: label, path: path, mmproj: mmproj) else { return }
+        model.selectModelID(apiID)
+        dismiss()
     }
 }

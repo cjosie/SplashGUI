@@ -247,6 +247,124 @@ struct GrantedSettings: Codable, Equatable {
     var memoryBytes: Int
 }
 
+// A model the user keeps in the picker: a saved Hub ID or a local GGUF/MLX file. The id IS the
+// model ID the app already flows everywhere — profile key, picker selection, client configs —
+// so per-model settings keep working without special cases. Local entries carry the paths as
+// plain strings: the app is not sandboxed, so no bookmarks.
+struct SavedModel: Codable, Identifiable, Equatable {
+    var id: String = ""         // "owner/repo[:variant]" or "local/<name>[:variant]"
+    var label: String = ""      // picker display name
+    var path: String = ""     // "" = Hub entry; else local GGUF file or model directory
+    var mmproj: String = ""   // local only, optional vision projector file
+    var isLocal: Bool { !path.isEmpty }
+
+    init() {}
+
+    init(id: String, label: String, path: String = "", mmproj: String = "") {
+        self.id = id
+        self.label = label
+        self.path = path
+        self.mmproj = mmproj
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, path, mmproj
+    }
+
+    // Tolerant decoder (the Codable trap): it applies per element, so one entry written by a
+    // future build must not throw the whole saved list — and with it the config — to factory.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+        mmproj = try c.decodeIfPresent(String.self, forKey: .mmproj) ?? ""
+    }
+
+    // Mirrors the engine's parse_model_id (server/serve_options.py): owner/repo[:variant],
+    // segments of [A-Za-z0-9._-] starting and ending alphanumeric-or-underscore (repo ≤ 96,
+    // variant ≤ 64), no "--" or ".." and no ".git" ending in the repo part, ".." refused in
+    // the variant too. The engine never contacts a local/ owner, but the shape still applies.
+    static func validID(_ id: String) -> Bool {
+        var repo = id
+        var variant: String?
+        if let colon = id.firstIndex(of: ":") {
+            repo = String(id[id.startIndex..<colon])
+            variant = String(id[id.index(after: colon)...])
+        }
+        let segs = repo.split(separator: "/", omittingEmptySubsequences: false)
+        guard segs.count == 2,
+              isRepoSegment(String(segs[0]), maxCount: nil),
+              isRepoSegment(String(segs[1]), maxCount: 96),
+              !repo.contains("--"), !repo.contains(".."), !repo.hasSuffix(".git")
+        else { return false }
+        if let v = variant {
+            guard v.count >= 1, v.count <= 64, !v.contains(".."), isVariantSegment(v) else { return false }
+        }
+        return true
+    }
+
+    private static func isRepoSegment(_ s: String, maxCount: Int?) -> Bool {
+        guard !s.isEmpty, s.count <= (maxCount ?? Int.max) else { return false }
+        guard isSegmentEdge(s.first!), isSegmentEdge(s.last!) else { return false }
+        return s.allSatisfy { isSegmentMiddle($0) }
+    }
+
+    // Variants start alphanumeric (no leading underscore) and may end on any middle char.
+    private static func isVariantSegment(_ s: String) -> Bool {
+        guard let first = s.first, first.isASCII, first.isLetter || first.isNumber else { return false }
+        return s.allSatisfy { isSegmentMiddle($0) }
+    }
+
+    private static func isSegmentEdge(_ c: Character) -> Bool {
+        c.isASCII && (c.isLetter || c.isNumber || c == "_")
+    }
+
+    private static func isSegmentMiddle(_ c: Character) -> Bool {
+        c.isASCII && (c.isLetter || c.isNumber || c == "." || c == "_" || c == "-")
+    }
+
+    // The auto API ID for a local file or directory: local/<name>[:variant], sanitized to the
+    // repo-ID shape. The variant is the part after the file name's last "-" when it reads like
+    // a quant name (no lowercase, with a digit or underscore), e.g. UD-IQ3_XXS's IQ3_XXS.
+    static func localID(forPath path: String) -> String {
+        var name = (path as NSString).lastPathComponent
+        if name.lowercased().hasSuffix(".gguf") { name = String(name.dropLast(".gguf".count)) }
+        var variant = ""
+        if let dash = name.lastIndex(of: "-") {
+            let tail = String(name[name.index(after: dash)...])
+            if tail.count >= 2, !tail.contains(where: \.isLowercase),
+               tail.contains(where: \.isNumber) || tail.contains("_"),
+               isVariantSegment(tail) {
+                variant = tail
+                name = String(name[..<dash])
+            }
+        }
+        let clean = sanitizeSegment(name)
+        let base = clean.isEmpty ? "model" : clean
+        return "local/\(base)" + (variant.isEmpty ? "" : ":\(variant)")
+    }
+
+    // Keeps [A-Za-z0-9._-], maps everything else to "-", collapses runs of "-" and ".", then
+    // trims to an alphanumeric-or-underscore on both ends and drops a ".git" ending — the
+    // exact refusals validID checks, so a sanitized segment is always a valid repo segment.
+    static func sanitizeSegment(_ s: String) -> String {
+        var out = ""
+        for c in s {
+            let mapped = isSegmentMiddle(c) ? c : "-"
+            if (mapped == "-" || mapped == ".") && out.last == mapped { continue }
+            out.append(mapped)
+        }
+        while let f = out.first, !isSegmentEdge(f) { out.removeFirst() }
+        while let l = out.last, !isSegmentEdge(l) { out.removeLast() }
+        if out.hasSuffix(".git") {
+            out = String(out.dropLast(4))
+            while let l = out.last, !isSegmentEdge(l) { out.removeLast() }
+        }
+        return out
+    }
+}
+
 struct AppConfig: Codable, Equatable {
     var run = RunConfig()
     var sampling = SamplingDefaults()
@@ -257,6 +375,9 @@ struct AppConfig: Codable, Equatable {
     var modelProfiles: [String: ModelProfile] = [:]
     // Last Splash-granted context/memory for custom IDs, keyed by model ID (see GrantedSettings).
     var grantedAuto: [String: GrantedSettings] = [:]
+    // The user's kept models shown under "Saved" in the picker: saved Hub IDs and local
+    // files, in the order added (see SavedModel). Removing an entry keeps its profile.
+    var savedModels: [SavedModel] = []
     var engineVersionOverride: String = ""
     var engineURLOverride: String = ""
     var engineSHA256Override: String = ""
@@ -276,7 +397,7 @@ struct AppConfig: Codable, Equatable {
     // that field at its default. The synthesized one throws on a missing key, which would drop
     // the whole config back to factory defaults and lose the user's settings.
     enum CodingKeys: String, CodingKey {
-        case run, sampling, modelProfiles, grantedAuto
+        case run, sampling, modelProfiles, grantedAuto, savedModels
         case engineVersionOverride, engineURLOverride, engineSHA256Override, checkEngineUpdate
         case engineMode
         case startOnLaunch
@@ -288,6 +409,7 @@ struct AppConfig: Codable, Equatable {
         sampling = try c.decodeIfPresent(SamplingDefaults.self, forKey: .sampling) ?? SamplingDefaults()
         modelProfiles = try c.decodeIfPresent([String: ModelProfile].self, forKey: .modelProfiles) ?? [:]
         grantedAuto = try c.decodeIfPresent([String: GrantedSettings].self, forKey: .grantedAuto) ?? [:]
+        savedModels = try c.decodeIfPresent([SavedModel].self, forKey: .savedModels) ?? []
         engineVersionOverride = try c.decodeIfPresent(String.self, forKey: .engineVersionOverride) ?? ""
         engineURLOverride = try c.decodeIfPresent(String.self, forKey: .engineURLOverride) ?? ""
         engineSHA256Override = try c.decodeIfPresent(String.self, forKey: .engineSHA256Override) ?? ""

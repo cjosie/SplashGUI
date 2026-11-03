@@ -591,6 +591,147 @@ func runTests() {
             && mlxK.expert && q2K.expert
             && !denseK.ple && !denseK.expert && !denseK.sparseKv)
 
+    // O: local models + the saved custom list (spec scratch/spec-local-and-saved-models.md).
+    // The Codable trap on the new list, the engine's argv rules for --model-dir/--mmproj/
+    // --revision, the ID validator mirroring parse_model_id, the local file validators, and
+    // the saved entry behaving like a catalog row for profiles.
+    let noSaved = #"{"run":{"port":8123,"modelID":"someone/Model:x"},"sampling":{"temperature":0.4}}"#
+    if let nsd = noSaved.data(using: .utf8),
+       let nscfg = try? JSONDecoder().decode(AppConfig.self, from: nsd) {
+         check("savedModels absent decodes [] without losing the config",
+               nscfg.savedModels.isEmpty && nscfg.run.port == 8123 && nscfg.sampling.temperature == 0.4)
+    } else {
+        check("savedModels absent decodes [] without losing the config", false, "decoder threw")
+    }
+    let minEntry = #"{"id":"a/b","label":"B"}"#
+    if let med = minEntry.data(using: .utf8),
+       let ment = try? JSONDecoder().decode(SavedModel.self, from: med) {
+        check("SavedModel without path/mmproj decodes defaulted",
+              ment.path.isEmpty && ment.mmproj.isEmpty && ment.isLocal == false)
+    } else {
+        check("SavedModel without path/mmproj decodes defaulted", false, "decoder threw")
+    }
+    var scfg = AppConfig()
+    scfg.savedModels = [SavedModel(id: "someone/Model:x", label: "X"),
+                        SavedModel(id: "local/test", label: "test",
+                                   path: "/m/test.gguf", mmproj: "/m/mmproj.gguf")]
+    if let sd = try? JSONEncoder().encode(scfg),
+       let sback = try? JSONDecoder().decode(AppConfig.self, from: sd) {
+        check("the saved list round-trips through a save, order kept",
+              sback.savedModels.count == 2
+                && sback.savedModels[0].id == "someone/Model:x" && !sback.savedModels[0].isLocal
+                && sback.savedModels[1].path == "/m/test.gguf" && sback.savedModels[1].isLocal
+                && sback.savedModels[1].mmproj == "/m/mmproj.gguf")
+    } else {
+        check("the saved list round-trips through a save, order kept", false, "encode/decode threw")
+    }
+    var lrun = RunConfig()
+    lrun.modelID = "local/test"
+    let localLaunch = SplashServer.LocalLaunch(modelDir: "/m/test.gguf", mmproj: "")
+    let largs = SplashServer.buildArguments(for: lrun, local: localLaunch)
+    check("--model-dir reaches the engine for a local entry",
+          flagValue(largs, "--model-dir") == "/m/test.gguf", largs.joined(separator: " "))
+    check("no --model-dir for a Hub entry",
+          !SplashServer.buildArguments(for: RunConfig()).contains("--model-dir"))
+    let visArgs = SplashServer.buildArguments(
+        for: lrun, local: SplashServer.LocalLaunch(modelDir: "/m/t.gguf", mmproj: "/m/mm.gguf"))
+    check("the projector passes with vision", flagValue(visArgs, "--mmproj") == "/m/mm.gguf")
+    var loRun = lrun
+    loRun.languageOnly = true
+    let loArgs = SplashServer.buildArguments(
+        for: loRun, local: SplashServer.LocalLaunch(modelDir: "/m/t.gguf", mmproj: "/m/mm.gguf"))
+    check("the projector never rides with language-only (engine parser rule)",
+          !loArgs.contains("--mmproj"), loArgs.joined(separator: " "))
+    let revArgs = SplashServer.buildArguments(for: lrun, revision: "deadbeef", local: localLaunch)
+    check("revision never accompanies a local entry, and still rides for a Hub one",
+          !revArgs.contains("--revision")
+            && flagValue(SplashServer.buildArguments(for: RunConfig(), revision: "abc"), "--revision") == "abc",
+          revArgs.joined(separator: " "))
+    check("the ID validator mirrors parse_model_id",
+          SavedModel.validID("local/Quant:Q4") && SavedModel.validID("a/b:C")
+            && SavedModel.validID("local/test")
+            && !SavedModel.validID("nope") && !SavedModel.validID("a//b")
+            && !SavedModel.validID("a b/c") && !SavedModel.validID("local/a..b")
+            && !SavedModel.validID("a/b:Q4..X") && !SavedModel.validID("a/b:")
+            && !SavedModel.validID("a/b:c:d"))
+
+    // Local file validators and sizes against temp fixtures.
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("splashgui-localtest-\(ProcessInfo.processInfo.processIdentifier)")
+    try? FileManager.default.removeItem(at: tmp)
+    try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    let ggufFile = tmp.appendingPathComponent("m.gguf")
+    let junkFile = tmp.appendingPathComponent("junk.gguf")
+    let projFile = tmp.appendingPathComponent("mmproj.gguf")
+    try? Data([UInt8]("GGUF".utf8) + [UInt8](repeating: 0, count: 100)).write(to: ggufFile)
+    try? Data([UInt8](repeating: 7, count: 64)).write(to: junkFile)
+    try? Data([UInt8]("GGUF".utf8) + [UInt8](repeating: 0, count: 16)).write(to: projFile)
+    let mlxDir = tmp.appendingPathComponent("mlx")
+    let emptyDir = tmp.appendingPathComponent("empty")
+    try? FileManager.default.createDirectory(at: mlxDir, withIntermediateDirectories: true)
+    try? FileManager.default.createDirectory(at: emptyDir, withIntermediateDirectories: true)
+    try? Data("{}".utf8).write(to: mlxDir.appendingPathComponent("config.json"))
+    try? Data([UInt8](repeating: 3, count: 120)).write(to: mlxDir.appendingPathComponent("model.safetensors"))
+    let linkFile = tmp.appendingPathComponent("link.gguf")
+    try? FileManager.default.createSymbolicLink(at: linkFile, withDestinationURL: ggufFile)
+    check("the GGUF magic and directory validators read the files like the engine",
+          MachineInfo.localLooksLikeModel(path: ggufFile.path)
+            && !MachineInfo.localLooksLikeModel(path: junkFile.path)
+            && MachineInfo.localLooksLikeModel(path: mlxDir.path)
+            && !MachineInfo.localLooksLikeModel(path: emptyDir.path)
+            && !MachineInfo.localLooksLikeModel(path: tmp.appendingPathComponent("gone.gguf").path))
+    check("local weights size sums the file or the directory's model files",
+          MachineInfo.localWeightsSize(path: ggufFile.path) == 104
+            && MachineInfo.localWeightsSize(path: mlxDir.path) == 120
+            && MachineInfo.localWeightsSize(path: junkFile.path) == 64
+            && MachineInfo.localWeightsSize(path: linkFile.path) == 104
+            && MachineInfo.localWeightsSize(path: tmp.appendingPathComponent("gone.gguf").path) == nil)
+    check("the local start blocker mirrors the engine's refusals",
+          AppModel.localStartBlocker(path: tmp.appendingPathComponent("gone.gguf").path,
+                                     mmproj: "", languageOnly: false) != nil
+            && AppModel.localStartBlocker(path: ggufFile.path, mmproj: projFile.path,
+                                          languageOnly: true) != nil
+            && AppModel.localStartBlocker(path: ggufFile.path, mmproj: tmp.appendingPathComponent("gone.gguf").path,
+                                          languageOnly: false) != nil
+            && AppModel.localStartBlocker(path: ggufFile.path, mmproj: projFile.path,
+                                          languageOnly: false) == nil
+            && AppModel.localStartBlocker(path: ggufFile.path, mmproj: "",
+                                          languageOnly: true) == nil)
+    try? FileManager.default.removeItem(at: tmp)
+    check("the auto local ID follows the sanitized repo shape",
+          SavedModel.localID(forPath: "/x/Qwen3.8-27B-UD-IQ3_XXS.gguf") == "local/Qwen3.8-27B-UD:IQ3_XXS"
+            && SavedModel.localID(forPath: "/x/model-v2.gguf") == "local/model-v2"
+            && SavedModel.localID(forPath: "/x/weird name (v3)!!") == "local/weird-name-v3"
+            && SavedModel.validID(SavedModel.localID(forPath: "/x/a..b__c!!.gguf"))
+            && SavedModel.validID(SavedModel.localID(forPath: "/x/!!!.gguf")))
+
+    // The saved entry flows through the picker and profiles like a catalog row.
+    let S = "someone/My-Qwen3.8-27B-Quant:Q4"
+    m.config.savedModels.removeAll()
+    m.selectModelID(A)
+    check("saveModel refuses an ID the engine would not accept",
+          m.saveModel(id: "nope", label: "N") == false && m.config.savedModels.isEmpty)
+    m.saveModel(id: S, label: "My Quant")
+    m.selectModelID(S)
+    check("the picker selection names a saved entry",
+          m.modelPickerSelection.wrappedValue == S && m.savedEntry?.label == "My Quant")
+    m.config.sampling.temperature = 0.11
+    m.selectModelID(A)
+    check("a saved entry's profile archives on switch away",
+          m.config.modelProfiles[S]?.sampling.temperature == 0.11)
+    m.selectModelID(S)
+    check("a saved entry restores its profile like a catalog row",
+          m.config.sampling.temperature == 0.11, "\(m.config.sampling.temperature)")
+    m.saveModel(id: S, label: "Renamed")
+    check("saving a duplicate ID updates the entry instead of appending",
+          m.config.savedModels.count == 1 && m.config.savedModels.first?.label == "Renamed",
+          "\(m.config.savedModels)")
+    m.removeSavedModel(id: S)
+    check("remove drops the entry but keeps the profile and grantedAuto",
+          m.config.savedModels.isEmpty && m.config.modelProfiles[S]?.sampling.temperature == 0.11
+            && m.modelPickerSelection.wrappedValue == "custom")
+    m.selectModelID(A)
+
     exit(failures == 0 ? 0 : 1)
 }
 
