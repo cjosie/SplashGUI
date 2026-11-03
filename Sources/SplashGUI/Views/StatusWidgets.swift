@@ -48,9 +48,9 @@ struct ServerToolbarControls: View {
             StageChipsRow(flexibleWidth: false)
                 .fixedSize(horizontal: true, vertical: false)
             HStack(spacing: 6) {
-                Text("http://127.0.0.1:")
+                Text("http://" + endpointHost + ":")
                     .font(.system(.caption, design: .monospaced))
-                    .help("The endpoint other services connect to. OpenAI-compatible API under /v1, Anthropic under /v1/messages.")
+                    .help("The endpoint other services connect to. OpenAI-compatible API under /v1, Anthropic under /v1/messages. With “Serve on LAN” on (Run tab) this shows this Mac's LAN address so you can copy it for other machines; 0.0.0.0 means the toggle is on but no network is leased yet.")
                 // String ports: Text interpolation of an Int applies locale number formatting,
                 // which grouped the port as "8,095".
                 TextField("", value: $model.config.run.port, format: .number.grouping(.never))
@@ -86,7 +86,16 @@ struct ServerToolbarControls: View {
         }
     }
 
-    private var endpoint: String { "http://127.0.0.1:" + String(model.config.run.port) }
+    // The toolbar host follows the (possibly edited) toggle, the way the port field follows
+    // the edited port: the LAN address once "Serve on LAN" is on, loopback otherwise.
+    private var endpointHost: String {
+        if model.config.run.lanAccess {
+            return MachineInfo.lanIPv4Address ?? "0.0.0.0"
+        }
+        return "127.0.0.1"
+    }
+
+    private var endpoint: String { "http://" + endpointHost + ":" + String(model.config.run.port) }
 
     // One slot, switched in place: the engine install / model load progress while getting to
     // ready, the KV context gauge once ready, and the plain server state with an empty gauge

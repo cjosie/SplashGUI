@@ -13,6 +13,9 @@ struct RunConfig: Codable, Equatable {
     var languageOnly: Bool = false
     var decodeShare: Double = 0.5
     var showWebUI: Bool = true
+    // Bind every IPv4 interface (0.0.0.0) so other machines on the LAN can connect.
+    // Off leaves the engine's 127.0.0.1 default: this Mac only.
+    var lanAccess: Bool = false
     var defaultReasoningEffort: String? = nil
     // How long the engine keeps its memory wired without a request. Its own default is 10m:
     // the first request after an idle minute pays a weight restore and a slower first prefill,
@@ -32,7 +35,7 @@ struct RunConfig: Codable, Equatable {
     // per-model profiles with it — back to factory defaults.
     enum CodingKeys: String, CodingKey {
         case modelID, port, auto, maxContext, maxMemory, kvFormat, maxCacheDisk
-        case languageOnly, decodeShare, showWebUI, defaultReasoningEffort
+        case languageOnly, decodeShare, showWebUI, lanAccess, defaultReasoningEffort
         case idleRelease, persistentCache, schemaVersion
     }
 
@@ -49,6 +52,7 @@ struct RunConfig: Codable, Equatable {
         languageOnly = try c.decodeIfPresent(Bool.self, forKey: .languageOnly) ?? d.languageOnly
         decodeShare = try c.decodeIfPresent(Double.self, forKey: .decodeShare) ?? d.decodeShare
         showWebUI = try c.decodeIfPresent(Bool.self, forKey: .showWebUI) ?? d.showWebUI
+        lanAccess = try c.decodeIfPresent(Bool.self, forKey: .lanAccess) ?? d.lanAccess
         defaultReasoningEffort = try c.decodeIfPresent(String.self, forKey: .defaultReasoningEffort)
             ?? d.defaultReasoningEffort
         idleRelease = try c.decodeIfPresent(String.self, forKey: .idleRelease) ?? d.idleRelease

@@ -189,6 +189,9 @@ final class SplashServer {
 
     static func buildArguments(for config: RunConfig, revision: String? = nil) -> [String] {
         var args = ["serve", "--model", config.modelID, "--port", String(config.port)]
+        // LAN serving: bind every IPv4 interface. The engine accepts IP-address Host headers
+        // by default, so no --allowed-host is needed for clients connecting by address.
+        if config.lanAccess { args += ["--host", "0.0.0.0"] }
         // A catalog entry pins an exact HF commit, so the pull is reproducible and a later
         // re-upload under the same name cannot change what this Mac loads.
         if let revision, !revision.isEmpty { args += ["--revision", revision] }

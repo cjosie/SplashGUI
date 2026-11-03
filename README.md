@@ -65,6 +65,8 @@ serves today.
 
 While the server is running it exposes an OpenAI-compatible API at `http://localhost:8095/v1` (port configurable on the Run tab). Any client that speaks that API can point at it. For a quick start without any external tool, the engine also serves a built-in web chat page in the browser ("Built-in web chat page" toggle, on by default).
 
+Turn on "Serve on LAN" (Run tab) to let other machines on your network connect: the server binds every interface and the title bar shows this Mac's LAN address to copy. There is no API key — anyone on the network can use the model, so use it on a trusted network. macOS may prompt to allow incoming connections for the Splash engine the first time.
+
 ## Building from source
 
 Requires the Swift 6.2 toolchain (Xcode 26 or the standalone toolchain).

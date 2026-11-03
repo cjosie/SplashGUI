@@ -62,6 +62,37 @@ enum MachineInfo {
         return (attrs[.systemFreeSize] as? Int64).map(Int.init)
     }
 
+    // The address to hand LAN clients: IPv4 on an active non-loopback interface, preferring
+    // en0 (the built-in Wi-Fi on every Apple Silicon Mac), then any other "en*" (Thunderbolt
+    // Ethernet/docks), then anything else. Skips link-local 169.254.x addresses — those mean
+    // "no DHCP lease", so nothing off this Mac can reach them.
+    static var lanIPv4Address: String? {
+        var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddrPtr) == 0 else { return nil }
+        defer { freeifaddrs(ifaddrPtr) }
+        var en0: String?
+        var otherEn: String?
+        var any: String?
+        var ptr = ifaddrPtr
+        while let cur = ptr {
+            defer { ptr = cur.pointee.ifa_next }
+            guard let addr = cur.pointee.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            let flags = Int32(cur.pointee.ifa_flags)
+            guard flags & IFF_UP != 0, flags & IFF_RUNNING != 0, flags & IFF_LOOPBACK == 0 else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let ok = getnameinfo(addr, socklen_t(addr.pointee.sa_len),
+                                 &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST)
+            guard ok == 0 else { continue }
+            let ip = String(cString: host)
+            guard !ip.hasPrefix("169.254.") else { continue }
+            let name = String(cString: cur.pointee.ifa_name)
+            if name == "en0" { en0 = ip; break }
+            if name.hasPrefix("en"), otherEn == nil { otherEn = ip }
+            if any == nil { any = ip }
+        }
+        return en0 ?? otherEn ?? any
+    }
+
     static func footprint(pid: Int) -> Int? {
         var info = rusage_info_current()
         let r = withUnsafeMutableBytes(of: &info) { rawBuf in

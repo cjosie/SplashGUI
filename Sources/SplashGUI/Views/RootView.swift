@@ -142,7 +142,11 @@ struct RootView: View {
             let m = model.effectiveModel ?? model.effectiveModelID
             // The port the server is actually on, not the (possibly edited) toolbar field.
             if let launched = model.launchedRunConfig {
-                return "Ready · \(m) on 127.0.0.1:" + String(launched.port)
+                // A LAN bind still answers loopback; show the LAN address because that's the
+                // one worth reading here, falling back to loopback while none is leased.
+                let host = launched.lanAccess
+                    ? (MachineInfo.lanIPv4Address ?? "127.0.0.1") : "127.0.0.1"
+                return "Ready · \(m) on " + host + ":" + String(launched.port)
             }
             return "Ready · \(m)"
         case .stopping: return "Stopping…"

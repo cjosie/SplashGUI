@@ -198,6 +198,20 @@ struct RunTab: View {
                 }
                 Spacer()
             }
+            Toggle("Serve on LAN", isOn: $model.config.run.lanAccess)
+                .help("Let other machines on your network connect: the server binds every network interface instead of this Mac only. Restart to apply. The API has no key — anyone on the network can use the model and the chat page. macOS may ask you to allow incoming connections for the Splash engine. This Mac keeps connecting over 127.0.0.1 either way.")
+            if model.config.run.lanAccess {
+                HStack(spacing: 6) {
+                    Text("Other machines connect to")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("http://" + (MachineInfo.lanIPv4Address ?? "no leased address") + ":"
+                         + String(model.config.run.port) + "/v1")
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                    Spacer()
+                }
+            }
         }
     }
 

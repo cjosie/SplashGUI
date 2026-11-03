@@ -131,6 +131,34 @@ func runTests() {
     off.maxCacheDisk = "auto"
     check("auto leaves the SSD quota to the engine", !SplashServer.buildArguments(for: off).contains("--max-cache-disk"))
 
+    // F2: LAN serving. --host goes to the engine only when the toggle is on, and a config
+    // written before the toggle existed must decode it defaulted, not throw (the Codable trap).
+    check("loopback default: no --host on the command line",
+          !SplashServer.buildArguments(for: RunConfig()).contains("--host"))
+    var lan = RunConfig()
+    lan.lanAccess = true
+    let lanArgs = SplashServer.buildArguments(for: lan)
+    check("LAN on: --host 0.0.0.0 reaches the engine",
+          lanArgs.firstIndex(of: "--host").map { $0 + 1 < lanArgs.count && lanArgs[$0 + 1] == "0.0.0.0" } == true,
+          lanArgs.joined(separator: " "))
+    let noLan = #"{"run":{"port":8123,"modelID":"someone/Model:x"}}"#
+    if let nd = noLan.data(using: .utf8),
+       let ncfg = try? JSONDecoder().decode(AppConfig.self, from: nd) {
+        check("lanAccess absent decodes false without losing the config",
+              ncfg.run.lanAccess == false && ncfg.run.port == 8123
+                && ncfg.run.modelID == "someone/Model:x")
+    } else {
+        check("lanAccess absent decodes false without losing the config", false, "decoder threw")
+    }
+    var lcfg = AppConfig()
+    lcfg.run.lanAccess = true
+    if let ld = try? JSONEncoder().encode(lcfg),
+       let lback = try? JSONDecoder().decode(AppConfig.self, from: ld) {
+        check("lanAccess round-trips through a save", lback.run.lanAccess == true)
+    } else {
+        check("lanAccess round-trips through a save", false, "encode/decode threw")
+    }
+
     // I: the Auto switch resolves the four covered fields at launch.
     let prof = AutoProfile(maxMemoryBytes: 40_000_000_000, contextTokens: 131_072, kvFormat: "int8")
     var arun = RunConfig()   // shipped default: Auto on
