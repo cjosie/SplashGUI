@@ -18,6 +18,13 @@ struct SettingsPage<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
         }
+        // NSHostingView never resigns the field editor when a click lands on a non-control
+        // area, so a focused field's ring stayed lit after clicking elsewhere. A tap that no
+        // control consumed (fields, buttons and toggles eat their own clicks) ends editing —
+        // matching AppKit: empty space deselects, clicking another control behaves natively.
+        .onTapGesture {
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
     }
 }
 
