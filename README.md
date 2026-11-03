@@ -7,7 +7,7 @@ SplashGUI is only a frontend. The engine binary is downloaded from the upstream 
 ## Features
 The top bar is always present, and shows engine status (while loading) and context usage (once loaded). It has a prefill/decode block that'll flip green for whichever the model is currently doing, the server URL (and configurable port setting), the apply & restart button, and the start/stop button. There's 3 tabs with additional settings and information:
 ![SplashGUI run tab, showing main settings](images/Run.png)
-Run tab: Model picker, settings requiring a restart, default reasoning level, engine version settings. Toggling "Auto" will pick context, memory, SSD cache, and KV Cache quantization based on hardware/Splash engine defaults. Optional toggles to disable the splash web chat server and the vision heads (the latter will save a smidge of VRAM). 
+Run tab: Model picker, settings requiring a restart, default reasoning level, engine version settings. Toggling "Auto" will pick context, memory, SSD cache, and KV Cache quantization based on hardware/Splash engine defaults. Optional toggles to disable the splash web chat server and the vision heads (the latter will save a smidge of VRAM), host to LAN, skip the huggingface check, etc.
 
 ![provider tab, showing temperature and opencode/zed/etc json template settings](images/Provider.png)
 Provider tab: Temperature, top-p/k settings, and other on-the-fly adjustable ones. The json template updates with the settings you pick here and on run, for easy copy-pasting into various service configs (I mostly use OpenCode V2). 
@@ -58,8 +58,7 @@ Outide of Splash's list, these have ran well for me. Paste the ID into **Customâ
 | `unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS` | ~19 GB with draft + vision; comfortable on 32 GB+ Macs |
 | `unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL` | Dynamic 4-bit with 6-bit layers; the quality pick of the GGUF family |
 
-Custom entries are unpinned (no revision/hash pre-flight) â€” you get whatever the Hub
-serves today.
+Custom entries are unpinned (no revision/hash pre-flight) until saved to the list. 
 
 ## Using the server
 
