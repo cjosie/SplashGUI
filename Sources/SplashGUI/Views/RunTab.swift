@@ -146,11 +146,8 @@ struct RunTab: View {
                 .disabled(model.config.run.auto)
                 .help("KV cache precision. BF16 is fastest at long contexts and exact; INT8 halves KV memory for RAM-constrained machines, but slows decode at depth and can cost accuracy (4-bit KV exists in Splash but is not offered here). With Auto on, the app picks BF16 and only drops to INT8 when BF16 would leave under a 32K window. Restart to apply.")
             }
-            LabeledField("Served name", $model.config.run.servedModelName, width: 120)
-                .help("An additional model name the API answers to, e.g. qwen27, so client configs stay short and stable across quants. The Provider tab writes it in place of the full Hub ID; /status keeps reporting the loaded model ID. Every model keeps its own name. Restart to apply.")
-            Toggle("Report served name in responses", isOn: $model.config.run.announceServedName)
-                .disabled(model.config.run.servedModelName.isEmpty)
-                .help("Responses report the served name and /v1/models lists it first; off (the engine default) they report the loaded model ID. Needs a served name. Restart to apply.")
+            LabeledField("Thinking budget", $model.config.run.thinkingTokenBudget, width: 150)
+                .help("Thinking tokens for requests that set no budget of their own, e.g. 16384; when it runs out the thinking closes and the answer follows. Blank means no cap (the engine default). Restart to apply.")
             if model.memoryKnobs.ple {
                 LabeledField("PLE memory", $model.config.run.pleMemory, width: 120)
                     .help("RAM held for the PLE n-gram table of a Qwen3.8-Flash-Next GGUF, e.g. 2G; the rest streams from the SSD. Blank leaves it to the engine, which streams when RAM cannot hold the whole table. Restart to apply.")
@@ -163,6 +160,8 @@ struct RunTab: View {
                 LabeledField("Sparse-KV memory", $model.config.run.sparseKvMemory, width: 120)
                     .help("RAM cache of the KV blocks this block-sparse model reads from the SSD, e.g. 1200M; never below the engine's floor. Blank keeps the floor. Restart to apply.")
             }
+            Toggle("Verify all draft rows", isOn: $model.config.run.verifyRowsAll)
+                .help("Decode-verify every row of each draft block instead of a learned subset. A MoE model's greedy and seeded outputs then repeat run to run, like a dense model's; the full check costs some decode speed. Off leaves it to the engine. Restart to apply.")
         }
     }
 
@@ -300,6 +299,13 @@ struct RunTab: View {
 
     private var serverColumn: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Served name leads the server column: it names the endpoint, next to the port
+            // field in the title bar above.
+            LabeledField("Served name", $model.config.run.servedModelName, width: 120)
+                .help("An additional model name the API answers to, e.g. qwen27, so client configs stay short and stable across quants. The Provider tab writes it in place of the full Hub ID; /status keeps reporting the loaded model ID. Every model keeps its own name. Restart to apply.")
+            Toggle("Report served name in responses", isOn: $model.config.run.announceServedName)
+                .disabled(model.config.run.servedModelName.isEmpty)
+                .help("Responses report the served name and /v1/models lists it first; off (the engine default) they report the loaded model ID. Needs a served name. Restart to apply.")
             LabeledField("Idle release", $model.config.run.idleRelease, width: 120)
                 .help("How long the engine keeps its memory wired without a request: a duration such as 30m or 2h, or off. The engine's own default is 10m, after which the next request pays a weight restore and a slower first prefill. off keeps the weights resident until POST /v1/memory/release.")
             SliderNumberField(
@@ -351,10 +357,6 @@ struct RunTab: View {
             }
             Toggle("Serve offline (skip Hub check)", isOn: $model.config.run.offline)
                 .help("Start without contacting Hugging Face: the model loads straight from the local cache. Use it on a plane or when the Hub is unreachable; a model that has never been downloaded cannot start this way. Restart to apply.")
-            LabeledField("Thinking budget", $model.config.run.thinkingTokenBudget, width: 120)
-                .help("Thinking tokens for requests that set no budget of their own, e.g. 16384; when it runs out the thinking closes and the answer follows. Blank means no cap (the engine default). Restart to apply.")
-            Toggle("Verify all draft rows", isOn: $model.config.run.verifyRowsAll)
-                .help("Decode-verify every row of each draft block instead of a learned subset. A MoE model's greedy and seeded outputs then repeat run to run, like a dense model's; the full check costs some decode speed. Off leaves it to the engine. Restart to apply.")
         }
     }
 
