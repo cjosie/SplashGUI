@@ -226,6 +226,19 @@ final class SplashServer {
         if let effort = config.defaultReasoningEffort, !effort.isEmpty {
             args += ["--default-reasoning-effort", effort]
         }
+        if config.offline { args += ["--offline"] }
+        if !config.thinkingTokenBudget.isEmpty {
+            args += ["--thinking-token-budget", config.thinkingTokenBudget]
+        }
+        if config.verifyRowsAll { args += ["--verify-rows", "all"] }
+        if !config.servedModelName.isEmpty {
+            args += ["--served-model-name", config.servedModelName]
+            // The engine needs a name to announce; the toggle alone passes nothing.
+            if config.announceServedName { args += ["--announce-served-name"] }
+        }
+        if !config.pleMemory.isEmpty { args += ["--ple-memory", config.pleMemory] }
+        if !config.expertMemory.isEmpty { args += ["--expert-memory", config.expertMemory] }
+        if !config.sparseKvMemory.isEmpty { args += ["--sparse-kv-memory", config.sparseKvMemory] }
         return args
     }
 }

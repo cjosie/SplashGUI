@@ -24,6 +24,28 @@ struct RunConfig: Codable, Equatable {
     // Keep the SSD KV/state tier across restarts, so a project you come back to restores its
     // prefix instead of prefilling it again.
     var persistentCache: Bool = true
+    // Start without contacting the Hugging Face Hub: the installed weights load straight from
+    // the local cache. For air-gapped or flaky-network starts; a never-downloaded model fails.
+    var offline: Bool = false
+    // Thinking tokens for requests that set no budget of their own; blank = no cap (the engine
+    // default). A serve-wide guard for clients that ask for thinking but say no length.
+    var thinkingTokenBudget: String = ""
+    // Decode-verify every row of each draft block. A MoE model's greedy and seeded outputs
+    // then repeat run to run like a dense model's, at some decode speed. Off leaves the
+    // engine's learned verify budget.
+    var verifyRowsAll: Bool = false
+    // An additional API model name (e.g. qwen27) so client configs stay short and stable across
+    // quants. It names this model, so it swaps with the profile like the serve fields.
+    var servedModelName: String = ""
+    // Report the served name in responses and /v1/models; off keeps the loaded model ID.
+    var announceServedName: Bool = false
+    // The arch-specific memory knobs: PLE and sparse-KV belong to Qwen3.8-Flash-Next GGUFs,
+    // expert slots to MoE rows. The Run tab shows only what the selected model has, and the
+    // launch path clears the rest (clearingUnsupportedMemoryKnobs), so a typed value never
+    // reaches a model without that memory while the saved value waits for the switch back.
+    var pleMemory: String = ""
+    var expertMemory: String = ""
+    var sparseKvMemory: String = ""
     var schemaVersion: Int? = 6
 
     // The memberwise initializer goes away with any custom initializer, and the defaults
@@ -36,7 +58,9 @@ struct RunConfig: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case modelID, port, auto, maxContext, maxMemory, kvFormat, maxCacheDisk
         case languageOnly, decodeShare, showWebUI, lanAccess, defaultReasoningEffort
-        case idleRelease, persistentCache, schemaVersion
+        case idleRelease, persistentCache, offline, thinkingTokenBudget, verifyRowsAll
+        case servedModelName, announceServedName, pleMemory, expertMemory, sparseKvMemory
+        case schemaVersion
     }
 
     init(from decoder: Decoder) throws {
@@ -57,6 +81,15 @@ struct RunConfig: Codable, Equatable {
             ?? d.defaultReasoningEffort
         idleRelease = try c.decodeIfPresent(String.self, forKey: .idleRelease) ?? d.idleRelease
         persistentCache = try c.decodeIfPresent(Bool.self, forKey: .persistentCache) ?? d.persistentCache
+        offline = try c.decodeIfPresent(Bool.self, forKey: .offline) ?? d.offline
+        thinkingTokenBudget = try c.decodeIfPresent(String.self, forKey: .thinkingTokenBudget)
+            ?? d.thinkingTokenBudget
+        verifyRowsAll = try c.decodeIfPresent(Bool.self, forKey: .verifyRowsAll) ?? d.verifyRowsAll
+        servedModelName = try c.decodeIfPresent(String.self, forKey: .servedModelName) ?? d.servedModelName
+        announceServedName = try c.decodeIfPresent(Bool.self, forKey: .announceServedName) ?? d.announceServedName
+        pleMemory = try c.decodeIfPresent(String.self, forKey: .pleMemory) ?? d.pleMemory
+        expertMemory = try c.decodeIfPresent(String.self, forKey: .expertMemory) ?? d.expertMemory
+        sparseKvMemory = try c.decodeIfPresent(String.self, forKey: .sparseKvMemory) ?? d.sparseKvMemory
         schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? d.schemaVersion
     }
 
@@ -93,6 +126,16 @@ struct RunConfig: Codable, Equatable {
             out.kvFormat = "bf16"
         }
         return out
+    }
+
+    // Policy for the launch copy: memory knobs the selected model's arch does not have are
+    // dropped, so the engine never sees them for a model that cannot use them. The saved
+    // config keeps the typed values for the model that does.
+    mutating func clearingUnsupportedMemoryKnobs(forModelID id: String) {
+        let k = CatalogModel.memoryKnobs(forID: id)
+        if !k.ple { pleMemory = "" }
+        if !k.expert { expertMemory = "" }
+        if !k.sparseKv { sparseKvMemory = "" }
     }
 }
 
@@ -145,6 +188,10 @@ struct ModelProfile: Codable, Equatable {
     var maxMemory: String = "auto"
     var kvFormat: String = "auto"
     var languageOnly = false
+    // The served API name names this model, so it belongs to the profile: switching models
+    // must not carry "qwen27" over to a different model's client configs.
+    var servedModelName: String = ""
+    var announceServedName: Bool = false
 
     // Tolerant decoder (the Codable trap): profiles saved before `auto` existed must decode
     // with it at its default, not throw — a nested failure drops the whole config to factory.
@@ -152,17 +199,21 @@ struct ModelProfile: Codable, Equatable {
 
     // The memberwise initializer the custom initializers take away.
     init(sampling: SamplingDefaults, auto: Bool, maxContext: String,
-         maxMemory: String, kvFormat: String, languageOnly: Bool) {
+         maxMemory: String, kvFormat: String, languageOnly: Bool,
+         servedModelName: String, announceServedName: Bool) {
         self.sampling = sampling
         self.auto = auto
         self.maxContext = maxContext
         self.maxMemory = maxMemory
         self.kvFormat = kvFormat
         self.languageOnly = languageOnly
+        self.servedModelName = servedModelName
+        self.announceServedName = announceServedName
     }
 
     enum CodingKeys: String, CodingKey {
         case sampling, auto, maxContext, maxMemory, kvFormat, languageOnly
+        case servedModelName, announceServedName
     }
 
     init(from decoder: Decoder) throws {
@@ -174,6 +225,8 @@ struct ModelProfile: Codable, Equatable {
         maxMemory = try c.decodeIfPresent(String.self, forKey: .maxMemory) ?? d.maxMemory
         kvFormat = try c.decodeIfPresent(String.self, forKey: .kvFormat) ?? d.kvFormat
         languageOnly = try c.decodeIfPresent(Bool.self, forKey: .languageOnly) ?? d.languageOnly
+        servedModelName = try c.decodeIfPresent(String.self, forKey: .servedModelName) ?? d.servedModelName
+        announceServedName = try c.decodeIfPresent(Bool.self, forKey: .announceServedName) ?? d.announceServedName
     }
 
     // Snapshot of the live settings, for archiving the model you are switching away from.
@@ -181,7 +234,9 @@ struct ModelProfile: Codable, Equatable {
         ModelProfile(sampling: config.sampling, auto: config.run.auto,
                      maxContext: config.run.maxContext,
                      maxMemory: config.run.maxMemory, kvFormat: config.run.kvFormat,
-                     languageOnly: config.run.languageOnly)
+                     languageOnly: config.run.languageOnly,
+                     servedModelName: config.run.servedModelName,
+                     announceServedName: config.run.announceServedName)
     }
 }
 
@@ -260,6 +315,8 @@ struct AppConfig: Codable, Equatable {
         run.maxMemory = profile.maxMemory
         run.kvFormat = profile.kvFormat
         run.languageOnly = profile.languageOnly
+        run.servedModelName = profile.servedModelName
+        run.announceServedName = profile.announceServedName
         run.defaultReasoningEffort = profile.sampling.reasoningEffort
     }
 }
@@ -308,6 +365,25 @@ struct CatalogModel: Identifiable, Equatable {
     // Auto's KV-per-token and window constants are measured on this arch only; other rows get
     // nil from autoProfile and the engine sizes itself.
     var qwen27BArch: Bool = false
+    // Which arch-specific serve memory knobs this row's model actually has: the PLE n-gram
+    // table and block-sparse KV are Qwen3.8-Flash-Next features; routed experts are the A3B
+    // MoE rows. The Run tab shows a knob only where its row (or the ID heuristics below)
+    // says true, and the launch path drops the rest.
+    var supportsPleMemory: Bool = false
+    var supportsExpertMemory: Bool = false
+    var supportsSparseKvMemory: Bool = false
+
+    // The knobs that apply to a model ID: the catalog row's flags when the ID is a row, else
+    // name heuristics for hand-typed IDs (A3B marks an MoE; Flash-Next marks the PLE table
+    // and the block-sparse KV). An ID matching neither gets no knobs and the engine sizes it.
+    static func memoryKnobs(forID id: String) -> (ple: Bool, expert: Bool, sparseKv: Bool) {
+        if let e = catalog.first(where: { $0.id == id }) {
+            return (e.supportsPleMemory, e.supportsExpertMemory, e.supportsSparseKvMemory)
+        }
+        let lower = id.lowercased()
+        let flashNext = lower.contains("flash-next")
+        return (flashNext, lower.contains("a3b"), flashNext)
+    }
 
     // Every level Splash's API accepts. A model's supportedEfforts filters this list.
     static let allEfforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
@@ -362,13 +438,13 @@ struct CatalogModel: Identifiable, Equatable {
     static let catalog: [CatalogModel] = [
         CatalogModel(id: "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M", label: "Qwen3.6-35B-A3B Q4_K_M",
                      note: "for 36 GB Macs · 24 GB download · Fast all-rounder",
-                     approxBytes: 24_000_000_000, memoryGB: 36),
+                     approxBytes: 24_000_000_000, memoryGB: 36, supportsExpertMemory: true),
         CatalogModel(id: "mlx-community/Qwen3.6-35B-A3B-4bit", label: "Qwen3.6-35B-A3B MLX 4-bit",
                      note: "for 36 GB Macs · 21 GB download · Fast all-rounder",
-                     approxBytes: 21_000_000_000, memoryGB: 36),
+                     approxBytes: 21_000_000_000, memoryGB: 36, supportsExpertMemory: true),
         CatalogModel(id: "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q2_K_XL", label: "Qwen3.6-35B-A3B Q2_K_XL",
                      note: "for 24 GB Macs · 14 GB download · Fast all-rounder",
-                     approxBytes: 14_000_000_000, memoryGB: 24),
+                     approxBytes: 14_000_000_000, memoryGB: 24, supportsExpertMemory: true),
         CatalogModel(id: "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M", label: "Qwen3.8-27B Q4_K_M",
                      note: "for 36 GB Macs · 21 GB download · Strongest at this size, slower",
                      approxBytes: 21_000_000_000, memoryGB: 36, qwen27BArch: true),
@@ -383,7 +459,8 @@ struct CatalogModel: Identifiable, Equatable {
                      qwen27BArch: true),
         CatalogModel(id: "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF:Q2_0", label: "Qwen3.8-Flash-Next Q2_0",
                      note: "for 64 GB Macs · 69 GB download · Most capable",
-                     approxBytes: 69_000_000_000, memoryGB: 64),
+                     approxBytes: 69_000_000_000, memoryGB: 64,
+                     supportsPleMemory: true, supportsSparseKvMemory: true),
         CatalogModel(id: "unsloth/flint-GGUF:UD-Q4_K_XL", label: "Flint Q4_K_XL",
                      note: "for 48 GB Macs · 26 GB download · Text only",
                      approxBytes: 26_000_000_000, memoryGB: 48),

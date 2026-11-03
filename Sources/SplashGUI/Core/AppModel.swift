@@ -403,7 +403,10 @@ final class AppModel: ObservableObject {
         let modalities = phase == .ready
             ? status?.inputModalities ?? (config.run.languageOnly ? ["text"] : ["text", "image", "pdf"])
             : (config.run.languageOnly ? ["text"] : ["text", "image", "pdf"])
-        let ctx = ClientConfigContext(client: client, modelID: config.run.modelID,
+        // The served name, when set, is the name clients should use: the API answers to it and,
+        // with announce, reports it. The full Hub ID stays the profile key and the /status name.
+        let apiName = config.run.servedModelName.isEmpty ? config.run.modelID : config.run.servedModelName
+        let ctx = ClientConfigContext(client: client, modelID: apiName,
                                       label: catalogEntry?.label ?? config.run.modelID,
                                       port: config.run.port, contextTokens: tokens,
                                       inputModalities: modalities,
@@ -433,6 +436,11 @@ final class AppModel: ObservableObject {
                 self.refreshModelSizeCache()
             }
         )
+    }
+
+    // Which arch memory knobs the Run tab shows for the selected model.
+    var memoryKnobs: (ple: Bool, expert: Bool, sparseKv: Bool) {
+        CatalogModel.memoryKnobs(forID: config.run.modelID)
     }
 
     // Resolved run profile for the current model, using the catalog weight estimate when the
@@ -560,7 +568,9 @@ final class AppModel: ObservableObject {
             self.phase = .starting
             let profile = self.currentAutoProfile
             do {
-                try self.server.launch(config: self.config.run.effective(using: profile),
+                var run = self.config.run.effective(using: profile)
+                run.clearingUnsupportedMemoryKnobs(forModelID: self.config.run.modelID)
+                try self.server.launch(config: run,
                                        revision: self.catalogEntry?.revision)
                 self.launchedRunConfig = self.config.run
                 if let pid = self.server.childPID {

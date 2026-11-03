@@ -60,6 +60,20 @@ func runTests() {
     check("restored reasoning effort (both places)",
           m.config.sampling.reasoningEffort == "low" && m.config.run.defaultReasoningEffort == "low")
 
+    // The served name names the model, so it swaps with the profile, and a model entered
+    // without a saved name starts blank rather than keeping the name of the one left.
+    m.config.run.servedModelName = "qwen27"
+    m.config.run.announceServedName = true
+    m.selectModelID(B)
+    check("served name archived with the outgoing profile",
+          m.config.modelProfiles[A]?.servedModelName == "qwen27"
+            && m.config.modelProfiles[A]?.announceServedName == true)
+    check("switching restores a blank served name for a model without one",
+          m.config.run.servedModelName.isEmpty && m.config.run.announceServedName == false)
+    m.selectModelID(A)
+    check("served name restored with the profile",
+          m.config.run.servedModelName == "qwen27" && m.config.run.announceServedName == true)
+
     // D: a second Qwen row is also card-driven, and card data is per row.
     m.selectModelID(C)
     check("Qwen Q4_K_M card temp 1.0", m.config.sampling.temperature == 1.0, "\(m.config.sampling.temperature)")
@@ -158,6 +172,99 @@ func runTests() {
     } else {
         check("lanAccess round-trips through a save", false, "encode/decode threw")
     }
+
+    // F3: the serve options from the 1.5.0 option audit (offline, thinking budget, verify-rows,
+    // served name, arch memory knobs). Defaults stay off the command line, a pre-audit config
+    // decodes them defaulted (the Codable trap), and the arch knobs reach only models that
+    // have the memory they tune.
+    func flagValue(_ args: [String], _ flag: String) -> String? {
+        guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }
+    let plainArgs = SplashServer.buildArguments(for: RunConfig())
+    check("new serve options stay off the command line by default",
+          !plainArgs.contains("--offline") && !plainArgs.contains("--thinking-token-budget")
+            && !plainArgs.contains("--verify-rows") && !plainArgs.contains("--served-model-name")
+            && !plainArgs.contains("--announce-served-name") && !plainArgs.contains("--ple-memory")
+            && !plainArgs.contains("--expert-memory") && !plainArgs.contains("--sparse-kv-memory"),
+          plainArgs.joined(separator: " "))
+    var so = RunConfig()
+    so.offline = true
+    so.thinkingTokenBudget = "16384"
+    so.verifyRowsAll = true
+    so.servedModelName = "qwen27"
+    so.announceServedName = true
+    so.pleMemory = "2G"
+    so.expertMemory = "16G"
+    so.sparseKvMemory = "1200M"
+    let soArgs = SplashServer.buildArguments(for: so)
+    check("offline reaches the engine", soArgs.contains("--offline"))
+    check("thinking budget reaches the engine",
+          flagValue(soArgs, "--thinking-token-budget") == "16384", soArgs.joined(separator: " "))
+    check("verify-rows all reaches the engine", flagValue(soArgs, "--verify-rows") == "all")
+    check("served name reaches the engine", flagValue(soArgs, "--served-model-name") == "qwen27")
+    check("announce reaches the engine with a name", soArgs.contains("--announce-served-name"))
+    check("PLE memory reaches the engine", flagValue(soArgs, "--ple-memory") == "2G")
+    check("expert memory reaches the engine", flagValue(soArgs, "--expert-memory") == "16G")
+    check("sparse-KV memory reaches the engine", flagValue(soArgs, "--sparse-kv-memory") == "1200M")
+    var nameless = RunConfig()
+    nameless.announceServedName = true
+    check("announce without a served name passes nothing",
+          !SplashServer.buildArguments(for: nameless).contains("--announce-served-name"))
+    let noOptions = #"{"run":{"port":8123,"modelID":"someone/Model:x"}}"#
+    if let od = noOptions.data(using: .utf8),
+       let ocfg = try? JSONDecoder().decode(AppConfig.self, from: od) {
+        check("serve options absent decode defaulted without losing the config",
+              ocfg.run.offline == false && ocfg.run.thinkingTokenBudget.isEmpty
+                && ocfg.run.verifyRowsAll == false && ocfg.run.servedModelName.isEmpty
+                && ocfg.run.announceServedName == false && ocfg.run.pleMemory.isEmpty
+                && ocfg.run.expertMemory.isEmpty && ocfg.run.sparseKvMemory.isEmpty
+                && ocfg.run.port == 8123 && ocfg.run.modelID == "someone/Model:x")
+    } else {
+        check("serve options absent decode defaulted without losing the config", false, "decoder threw")
+    }
+    var ocfg2 = AppConfig()
+    ocfg2.run.offline = true
+    ocfg2.run.thinkingTokenBudget = "16384"
+    ocfg2.run.servedModelName = "qwen27"
+    ocfg2.run.announceServedName = true
+    ocfg2.run.pleMemory = "2G"
+    if let od2 = try? JSONEncoder().encode(ocfg2),
+       let oback = try? JSONDecoder().decode(AppConfig.self, from: od2) {
+        check("serve options round-trip through a save",
+              oback.run.offline == true && oback.run.thinkingTokenBudget == "16384"
+                && oback.run.servedModelName == "qwen27" && oback.run.announceServedName == true
+                && oback.run.pleMemory == "2G")
+    } else {
+        check("serve options round-trip through a save", false, "encode/decode threw")
+    }
+    // The arch gate on the launch copy: knobs typed for a model that lacks the memory never
+    // reach the engine; the models that have them keep them.
+    let flashNextID = "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF:Q2_0"
+    let moeID = "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M"
+    func knobsKept(_ id: String) -> (ple: Bool, expert: Bool, sparseKv: Bool) {
+        var r = RunConfig()
+        r.pleMemory = "2G"
+        r.expertMemory = "16G"
+        r.sparseKvMemory = "1200M"
+        r.clearingUnsupportedMemoryKnobs(forModelID: id)
+        return (!r.pleMemory.isEmpty, !r.expertMemory.isEmpty, !r.sparseKvMemory.isEmpty)
+    }
+    let denseKept = knobsKept(A)
+    check("knobs dropped for a dense 27B row",
+          !denseKept.ple && !denseKept.expert && !denseKept.sparseKv)
+    let fnKept = knobsKept(flashNextID)
+    check("Flash-Next keeps PLE and sparse-KV, drops experts",
+          fnKept.ple && fnKept.sparseKv && !fnKept.expert)
+    let moeKept = knobsKept(moeID)
+    check("MoE keeps experts, drops PLE and sparse-KV",
+          moeKept.expert && !moeKept.ple && !moeKept.sparseKv)
+    let customFN = knobsKept("someone/MyQwen3.8-Flash-Next-Quant:Q4")
+    check("hand-typed Flash-Next ID keeps its knobs by name",
+          customFN.ple && customFN.sparseKv && !customFN.expert)
+    let customNone = knobsKept("someone/Custom-Model:x")
+    check("unknown custom ID gets no knobs",
+          !customNone.ple && !customNone.expert && !customNone.sparseKv)
 
     // I: the Auto switch resolves the four covered fields at launch.
     let prof = AutoProfile(maxMemoryBytes: 40_000_000_000, contextTokens: 131_072, kvFormat: "int8")
@@ -317,6 +424,19 @@ func runTests() {
             && xtext.contains("model_auto_compact_token_limit = 58982")
             && xtext.contains("model_provider = \"splash\""))
 
+    // The served name, when set, replaces the Hub ID in the configs the Provider tab writes.
+    let priorID = m.config.run.modelID
+    m.config.run.modelID = A
+    m.config.run.servedModelName = "qwen27"
+    let stext = m.clientConfigText(for: .claudeCode)
+    check("served name: client configs name the model by it",
+          stext.contains("\"qwen27\"") && !stext.contains(A))
+    m.config.run.servedModelName = ""
+    let ftext = m.clientConfigText(for: .claudeCode)
+    check("no served name: the full Hub ID is written as before",
+          ftext.contains(A) && !ftext.contains("qwen27"))
+    m.config.run.modelID = priorID
+
     // M: engine source — the mode field's tolerant decode and the latest-release resolver.
     // Synthetic JSON, not the live fixture: the app now WRITES engineMode, so the on-disk
     // config always has the key and cannot prove the absent-key default.
@@ -457,6 +577,19 @@ func runTests() {
                                   languageOnly: false, weightsBytes: 1_000_000_000) == nil)
     check("Auto sizing still covers the 27B arch",
           MachineInfo.autoProfile(modelID: A, languageOnly: false, weightsBytes: 10_000_000_000) != nil)
+
+    // The memory-knob support flags follow the archs: the Flash-Next row tunes PLE and
+    // sparse-KV, the three A3B rows tune experts, the rest tune nothing.
+    let fnK = CatalogModel.memoryKnobs(forID: flashNextID)
+    let moeK = CatalogModel.memoryKnobs(forID: moeID)
+    let mlxK = CatalogModel.memoryKnobs(forID: "mlx-community/Qwen3.6-35B-A3B-4bit")
+    let q2K = CatalogModel.memoryKnobs(forID: "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q2_K_XL")
+    let denseK = CatalogModel.memoryKnobs(forID: A)
+    check("catalog rows carry their memory-knob support",
+          fnK.ple && fnK.sparseKv && !fnK.expert
+            && moeK.expert && !moeK.ple && !moeK.sparseKv
+            && mlxK.expert && q2K.expert
+            && !denseK.ple && !denseK.expert && !denseK.sparseKv)
 
     exit(failures == 0 ? 0 : 1)
 }
