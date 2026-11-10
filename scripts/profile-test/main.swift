@@ -465,20 +465,33 @@ func runTests() {
     } else {
         check("engineMode round-trips", false, "encode/decode threw")
     }
-    // The resolver's pure half, fed the real 1.5.0 release fixture. A latest that equals the
-    // compiled-in pin must produce the identical URL so EngineInstaller reuses its directory
-    // instead of keying a hash-named twin off the URL.
-    let v150 = "1ddc28bf7bfda8833859a913d7072e2aac9072addb9eb5664f3bf1a83a8d6ee2"
-    let assets150 = ["splash-1.5.0-arm64-macos26.tar.gz", "splash-1.5.0-arm64-macos26.tar.gz.sha256",
-                     "Splash-1.5.0.dmg", "SHA256SUMS", "appcast.xml"]
-    if let lp = EngineResolver.pin(tagName: "1.5.0", assetNames: assets150, sha256Text: v150 + "\n") {
-        check("latest 1.5.0 resolves to the compiled-in pin exactly",
+    // The resolver's pure half, fed a fixture built FROM the compiled-in pin (so a pin bump
+    // cannot stale this check). A latest that equals the pin must produce the identical URL
+    // so EngineInstaller reuses its directory instead of keying a hash-named twin off the URL.
+    let pinV = EngineInstaller.defaultPin.version
+    let assetsPin = ["splash-\(pinV)-arm64-macos26.tar.gz", "splash-\(pinV)-arm64-macos26.tar.gz.sha256",
+                     "Splash-\(pinV).dmg", "SHA256SUMS", "appcast.xml"]
+    if let lp = EngineResolver.pin(tagName: pinV, assetNames: assetsPin, sha256Text: EngineInstaller.defaultPin.sha256 + "\n") {
+        check("latest equal to the compiled-in pin resolves to the identical pin",
               lp == EngineInstaller.defaultPin, "\(lp.version) \(lp.url)")
         check("latest-equals-pinned reuses the pinned install dir",
               EngineInstaller.dirName(for: lp) == EngineInstaller.dirName(for: EngineInstaller.defaultPin))
     } else {
-        check("latest 1.5.0 resolves to the compiled-in pin exactly", false, "pin() returned nil")
+        check("latest equal to the compiled-in pin resolves to the identical pin", false, "pin() returned nil")
         check("latest-equals-pinned reuses the pinned install dir", false)
+    }
+    // A latest NEWER than the pin (the 1.5.0-pinned era's 1.6.0 release): the URL diverges, so
+    // dirName keys a hash-named twin — and the payload still installs because the extracted
+    // directory is DISCOVERED (findExtractedRoot, above), not assumed (the redownload-loop bug).
+    let v150 = "1ddc28bf7bfda8833859a913d7072e2aac9072addb9eb5664f3bf1a83a8d6ee2"
+    let assets150 = ["splash-1.5.0-arm64-macos26.tar.gz", "splash-1.5.0-arm64-macos26.tar.gz.sha256"]
+    if let older = EngineResolver.pin(tagName: "1.5.0", assetNames: assets150, sha256Text: v150 + "\n") {
+        check("a resolved pin with a URL diverging from the compiled pin keys a hash-named dir",
+              EngineInstaller.dirName(for: older) != EngineInstaller.dirName(for: EngineInstaller.defaultPin)
+                && EngineInstaller.dirName(for: older).hasPrefix("splash-1.5.0-"),
+              EngineInstaller.dirName(for: older))
+    } else {
+        check("a resolved pin with a URL diverging from the compiled pin keys a hash-named dir", false, "pin() returned nil")
     }
     if let vp = EngineResolver.pin(tagName: "v1.6.1", assetNames: ["splash-1.6.1-arm64-macos26.tar.gz",
                                                                    "splash-1.6.1-arm64-macos26.tar.gz.sha256"],
@@ -511,33 +524,118 @@ func runTests() {
 
     // The mode table start() installs by: the custom pin applies only in custom mode, pinned
     // mode ignores the override fields, and latest falls back to the installed engine, never
-    // downward to the compiled pin.
+    // downward to the compiled pin. No Homebrew engine (externalVersion nil) in these rows.
     let stale = EnginePin(version: "1.4.1", sha256: String(repeating: "b", count: 64),
                           url: "https://github.com/incoai/splash/releases/download/1.4.1/splash-1.4.1-arm64-macos26.tar.gz")
+    let PIN = "1.6.0"
     let pinnedPlan = AppModel.enginePlan(mode: .pinned, customOverride: stale, installed: true,
-                                         checkUpdate: true, latest: nil)
+                                         checkUpdate: true, latest: nil, pinnedVersion: PIN, externalVersion: nil)
     check("pinned mode ignores complete custom fields",
           pinnedPlan.override == nil && pinnedPlan.ensure == true, "\(pinnedPlan)")
     let customPlan = AppModel.enginePlan(mode: .custom, customOverride: stale, installed: true,
-                                         checkUpdate: false, latest: nil)
+                                         checkUpdate: false, latest: nil, pinnedVersion: PIN, externalVersion: nil)
     check("custom mode installs the custom pin regardless of the update toggle",
           customPlan.ensure == true && customPlan.override == stale)
     let partialPlan = AppModel.enginePlan(mode: .custom, customOverride: nil, installed: true,
-                                          checkUpdate: false, latest: nil)
+                                          checkUpdate: false, latest: nil, pinnedVersion: PIN, externalVersion: nil)
     check("custom mode with partial fields keeps pinned behavior",
           partialPlan.ensure == false && partialPlan.override == nil)
     let latestHit = AppModel.enginePlan(mode: .latest, customOverride: nil, installed: true,
-                                        checkUpdate: false, latest: stale)
+                                        checkUpdate: false, latest: stale, pinnedVersion: PIN, externalVersion: nil)
     check("latest mode installs the resolver answer",
           latestHit.ensure == true && latestHit.override == stale)
     let latestKeep = AppModel.enginePlan(mode: .latest, customOverride: nil, installed: true,
-                                         checkUpdate: false, latest: nil)
+                                         checkUpdate: false, latest: nil, pinnedVersion: PIN, externalVersion: nil)
     check("latest mode offline keeps the installed engine",
           latestKeep.ensure == false && latestKeep.override == nil)
     let latestBootstrap = AppModel.enginePlan(mode: .latest, customOverride: nil, installed: false,
-                                              checkUpdate: false, latest: nil)
+                                              checkUpdate: false, latest: nil, pinnedVersion: PIN, externalVersion: nil)
     check("latest mode offline with nothing installed installs the compiled pin",
           latestBootstrap.ensure == true && latestBootstrap.override == nil)
+
+    // Homebrew adoption rows: an engine at or above the wanted build satisfies pinned and
+    // latest without a download; an older one does not; custom never accepts a stand-in;
+    // and latest compares against the RESOLVED newest, not the compiled pin.
+    let extPinned = AppModel.enginePlan(mode: .pinned, customOverride: nil, installed: false,
+                                        checkUpdate: true, latest: nil, pinnedVersion: PIN, externalVersion: "1.6.0")
+    check("brew engine equal to the pin is adopted, nothing installed",
+          extPinned.external && extPinned.ensure == false, "\(extPinned)")
+    let extNewer = AppModel.enginePlan(mode: .pinned, customOverride: nil, installed: true,
+                                       checkUpdate: true, latest: nil, pinnedVersion: PIN, externalVersion: "1.7.2")
+    check("brew engine newer than the pin is adopted too",
+          extNewer.external && extNewer.ensure == false)
+    let extOlder = AppModel.enginePlan(mode: .pinned, customOverride: nil, installed: false,
+                                       checkUpdate: true, latest: nil, pinnedVersion: PIN, externalVersion: "1.5.0")
+    check("brew engine older than the pin installs the managed copy",
+          !extOlder.external && extOlder.ensure == true)
+    let future = EnginePin(version: "9.9.9", sha256: String(repeating: "c", count: 64),
+                           url: "https://github.com/incoai/splash/releases/download/9.9.9/splash-9.9.9-arm64-macos26.tar.gz")
+    let extLatestOk = AppModel.enginePlan(mode: .latest, customOverride: nil, installed: true,
+                                          checkUpdate: false, latest: stale, pinnedVersion: PIN, externalVersion: "1.6.0")
+    check("brew at or above the resolved latest satisfies it",
+          extLatestOk.external && extLatestOk.ensure == false && extLatestOk.override == stale)
+    let extLatestOlder = AppModel.enginePlan(mode: .latest, customOverride: nil, installed: true,
+                                             checkUpdate: false, latest: future, pinnedVersion: PIN, externalVersion: "1.6.0")
+    check("brew older than the resolved latest installs the managed copy",
+          !extLatestOlder.external && extLatestOlder.ensure == true)
+    let extCustom = AppModel.enginePlan(mode: .custom, customOverride: stale, installed: true,
+                                        checkUpdate: false, latest: nil, pinnedVersion: PIN, externalVersion: "9.9.9")
+    check("custom mode never substitutes the brew engine",
+          !extCustom.external && extCustom.ensure == true && extCustom.override == stale)
+
+    // Dotted version compare: numeric segments, not lexicographic.
+    check("versionOrder is numeric per segment",
+          EngineInstaller.versionOrder("1.10.0", "1.6.0") == .orderedDescending
+            && EngineInstaller.versionOrder("1.6.0", "1.10.0") == .orderedAscending
+            && EngineInstaller.versionOrder("1.6.0", "1.6.0") == .orderedSame
+            && EngineInstaller.versionOrder("1.6", "1.6.0") == .orderedSame
+            && EngineInstaller.versionOrder("1.6.0+build7", "1.6.0") == .orderedSame
+            && EngineInstaller.versionOrder("1.5.9", "1.6.0") == .orderedAscending)
+
+    // Brew probe against a fixture libexec: complete layout reports its version, any
+    // missing piece (or a dangling brew symlink) returns nil.
+    let brewFixture = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("splash-brew-fixture-\(UUID().uuidString)", isDirectory: true)
+    func brewProbe(_ root: URL) -> String? { EngineInstaller.externalEngineVersion(at: root) }
+    try? FileManager.default.createDirectory(at: brewFixture.appendingPathComponent("python/bin", isDirectory: true),
+                                             withIntermediateDirectories: true)
+    try? FileManager.default.createDirectory(at: brewFixture.appendingPathComponent("install", isDirectory: true),
+                                             withIntermediateDirectories: true)
+    FileManager.default.createFile(atPath: brewFixture.appendingPathComponent("python/bin/python3").path,
+                                   contents: Data())
+    try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                           ofItemAtPath: brewFixture.appendingPathComponent("python/bin/python3").path)
+    FileManager.default.createFile(atPath: brewFixture.appendingPathComponent("install/launcher.py").path,
+                                   contents: Data())
+    FileManager.default.createFile(atPath: brewFixture.appendingPathComponent("release.json").path,
+                                   contents: Data("{ \"version\": \"9.9.9\" }".utf8))
+    check("brew fixture reports its version", brewProbe(brewFixture) == "9.9.9", "\(brewProbe(brewFixture) ?? "nil")")
+    try? FileManager.default.removeItem(at: brewFixture.appendingPathComponent("install/launcher.py"))
+    check("brew fixture without launcher.py is not usable", brewProbe(brewFixture) == nil)
+    check("a dangling path is not a brew engine",
+          brewProbe(brewFixture.appendingPathComponent("nope")) == nil)
+    try? FileManager.default.removeItem(at: brewFixture)
+
+    // Extracted-payload discovery: the archive's top dir is named for the version while a
+    // URL-diverging pin stages under a hashed name — the install must find the real payload
+    // (this was the redownload-every-restart bug), and a payload-free staging area is nil.
+    let stageFixture = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("splash-stage-fixture-\(UUID().uuidString)", isDirectory: true)
+    let hashed = stageFixture.appendingPathComponent("splash-9.9.9-abcd1234-arm64-macos26", isDirectory: true)
+    let canonical = stageFixture.appendingPathComponent("splash-9.9.9-arm64-macos26", isDirectory: true)
+    try? FileManager.default.createDirectory(at: canonical, withIntermediateDirectories: true)
+    FileManager.default.createFile(atPath: canonical.appendingPathComponent("release.json").path, contents: Data())
+    check("findExtractedRoot discovers the archive-named payload",
+          EngineInstaller.findExtractedRoot(in: stageFixture, preferring: hashed)?.lastPathComponent
+              == "splash-9.9.9-arm64-macos26")
+    try? FileManager.default.createDirectory(at: hashed, withIntermediateDirectories: true)
+    FileManager.default.createFile(atPath: hashed.appendingPathComponent("release.json").path, contents: Data())
+    check("findExtractedRoot prefers the name-keyed payload when it exists",
+          EngineInstaller.findExtractedRoot(in: stageFixture, preferring: hashed)?.lastPathComponent
+              == "splash-9.9.9-abcd1234-arm64-macos26")
+    try? FileManager.default.removeItem(at: stageFixture)
+    check("an empty staging area yields no payload dir",
+          EngineInstaller.findExtractedRoot(in: stageFixture, preferring: hashed) == nil)
 
     // N: the catalog must track the installed engine's suggested list (the sync guard for the
     // Splash-defaults swap). Skips with a PASS when no engine is installed on the test machine.

@@ -27,9 +27,9 @@ final class EngineInstaller: ObservableObject {
 
     // Bumping the engine is an app release; AppConfig's engine*Override fields are the escape hatch.
     static let defaultPin = EnginePin(
-        version: "1.5.0",
-        sha256: "1ddc28bf7bfda8833859a913d7072e2aac9072addb9eb5664f3bf1a83a8d6ee2",
-        url: "https://github.com/incoai/splash/releases/download/1.5.0/splash-1.5.0-arm64-macos26.tar.gz"
+        version: "1.6.0",
+        sha256: "da3aef0a581491b0eb4c1168bda07f520e5ca8368764abff426d95ac1c77e5c4",
+        url: "https://github.com/incoai/splash/releases/download/1.6.0/splash-1.6.0-arm64-macos26.tar.gz"
     )
 
     static let fm = FileManager.default
@@ -41,6 +41,58 @@ final class EngineInstaller: ObservableObject {
 
     static var pythonPath: URL { currentLink.appendingPathComponent("python/bin/python3") }
     static var launcherPath: URL { currentLink.appendingPathComponent("install/launcher.py") }
+
+    // A Homebrew-casked engine (`brew install splash`, incoai/tap). The bottle's `libexec/`
+    // mirrors the OTA tarball root exactly (python/bin/python3, install/launcher.py,
+    // release.json), so `current` can simply point at it and every downstream reader —
+    // isInstalled, release.json, the launcher argv — works unchanged. The `opt` symlink is
+    // version-independent, so `brew upgrade` needs no app cooperation; `brew uninstall`
+    // leaves it dangling and externalEngineVersion() returns nil.
+    static var externalEngineRoot: URL {
+        URL(fileURLWithPath: "/opt/homebrew/opt/splash/libexec", isDirectory: true)
+    }
+
+    // The version of a usable Homebrew engine, or nil (not installed, uninstalled, or an
+    // unexpected layout). `at` lets the harness feed a fixture directory.
+    static func externalEngineVersion(at root: URL? = nil) -> String? {
+        let root = root ?? externalEngineRoot
+        guard fm.isExecutableFile(atPath: root.appendingPathComponent("python/bin/python3").path),
+              fm.fileExists(atPath: root.appendingPathComponent("install/launcher.py").path),
+              let data = try? Data(contentsOf: root.appendingPathComponent("release.json")),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let v = obj["version"] as? String, !v.isEmpty else { return nil }
+        return v
+    }
+
+    // Numeric-aware compare of dotted versions: "1.10.0" > "1.6.0"; non-numeric suffixes
+    // ("1.6.0+build7") compare on their leading digits. Missing segments count as 0.
+    nonisolated static func versionOrder(_ a: String, _ b: String) -> ComparisonResult {
+        func parts(_ s: String) -> [Int] {
+            s.split(separator: ".").map { Int($0.prefix { $0.isNumber }) ?? 0 }
+        }
+        let pa = parts(a), pb = parts(b)
+        for i in 0..<max(pa.count, pb.count) {
+            let x = i < pa.count ? pa[i] : 0, y = i < pb.count ? pb[i] : 0
+            if x != y { return x < y ? .orderedAscending : .orderedDescending }
+        }
+        return .orderedSame
+    }
+
+    // Point `current` at the Homebrew payload instead of downloading a managed copy.
+    // The managed directories (if any) stay on disk untouched — this only moves a symlink.
+    // True when `current` points at the adopted Homebrew payload rather than a managed dir.
+    static var currentIsExternal: Bool {
+        (try? fm.destinationOfSymbolicLink(atPath: currentLink.path)) == externalEngineRoot.path
+    }
+
+    static func adoptExternalEngine() throws {
+        guard let v = externalEngineVersion() else {
+            throw InstallError.preflight("No usable Homebrew Splash engine found at \(externalEngineRoot.path).")
+        }
+        try fm.createDirectory(at: engineRoot, withIntermediateDirectories: true)
+        try flipCurrent(to: externalEngineRoot.path)
+        _ = v
+    }
 
     static func currentReleaseVersion() -> String? {
         let rel = currentLink.appendingPathComponent("release.json")
@@ -63,10 +115,14 @@ final class EngineInstaller: ObservableObject {
         let pin = override ?? Self.defaultPin
         await MainActor.run { self.resolvedVersion = pin.version }
 
-        // Reuse only when `current` points at exactly this pin's dir — an override of the same
-        // version from another URL installs into its own dir and must not be skipped.
+        // Reuse when `current` already runs exactly this pin's version from the right place:
+        // this pin's own directory, or the adopted Homebrew payload (a same-version override
+        // from ANOTHER URL must still install into its own dir, so overrides never match the
+        // external path).
+        let currentDest = try? Self.fm.destinationOfSymbolicLink(atPath: Self.currentLink.path)
         if let have = Self.currentReleaseVersion(), have == pin.version, Self.isInstalled,
-           (try? Self.fm.destinationOfSymbolicLink(atPath: Self.currentLink.path)) == Self.dirName(for: pin) {
+           currentDest == Self.dirName(for: pin)
+             || (override == nil && currentDest == Self.externalEngineRoot.path) {
             await MainActor.run { self.installedVersion = have; self.step = .ready }
             return
         }
@@ -82,9 +138,11 @@ final class EngineInstaller: ObservableObject {
         let stagedTar = Self.stagedDir.appendingPathComponent(name + ".tar.gz")
         let stagedRoot = Self.stagedDir.appendingPathComponent(name, isDirectory: true)
 
+        // Wipe the staging area first: a previous failed attempt can leave an extracted
+        // payload under the archive's own directory name (see findExtractedRoot), and a
+        // stale one would confuse the discovery below.
+        try? Self.fm.removeItem(at: Self.stagedDir)
         try Self.fm.createDirectory(at: Self.stagedDir, withIntermediateDirectories: true)
-        try? Self.fm.removeItem(at: stagedTar)
-        try? Self.fm.removeItem(at: stagedRoot)
 
         do {
             try await download(pin: pin, to: stagedTar)
@@ -96,33 +154,36 @@ final class EngineInstaller: ObservableObject {
 
             await MainActor.run { self.step = .extracting }
             try Self.run("/usr/bin/tar", ["-xzf", stagedTar.path, "-C", Self.stagedDir.path])
-            let release = stagedRoot.appendingPathComponent("release.json")
-            guard Self.fm.fileExists(atPath: release.path) else {
-                throw InstallError.preflight("Extracted archive is missing release.json; unexpected payload.")
+            // The archive's top-level directory is always named for the VERSION, while
+            // `name` gains a URL hash whenever pin.url differs from the compiled default
+            // (a resolved-latest or custom pin). Expecting stagedRoot there meant every
+            // such install died on the release.json check AFTER the download — and
+            // re-downloaded on every retry. Discover what was actually extracted.
+            guard let extractedRoot = Self.findExtractedRoot(in: Self.stagedDir, preferring: stagedRoot) else {
+                throw InstallError.preflight("Extracted archive has no release.json in any payload directory; unexpected archive layout.")
             }
             for rel in ["python/bin/python3", "engine/splash"] {
                 try? Self.fm.setAttributes([.posixPermissions: 0o755],
-                    ofItemAtPath: stagedRoot.appendingPathComponent(rel).path)
+                    ofItemAtPath: extractedRoot.appendingPathComponent(rel).path)
             }
 
             await MainActor.run { self.step = .validating }
-            try Self.run(stagedRoot.appendingPathComponent("python/bin/python3").path,
-                ["-u", stagedRoot.appendingPathComponent("install/launcher.py").path, "--help"])
+            try Self.run(extractedRoot.appendingPathComponent("python/bin/python3").path,
+                ["-u", extractedRoot.appendingPathComponent("install/launcher.py").path, "--help"])
 
             await MainActor.run { self.step = .switching }
             let finalDir = Self.engineRoot.appendingPathComponent(name, isDirectory: true)
             try? Self.fm.removeItem(at: finalDir)
             try Self.fm.createDirectory(at: Self.engineRoot, withIntermediateDirectories: true)
-            try Self.fm.moveItem(at: stagedRoot, to: finalDir)
+            try Self.fm.moveItem(at: extractedRoot, to: finalDir)
             try Self.flipCurrent(to: name)
             Self.prune(keeping: name)
-            try? Self.fm.removeItem(at: stagedTar)
+            try? Self.fm.removeItem(at: Self.stagedDir)
 
             let v = Self.currentReleaseVersion()
             await MainActor.run { self.installedVersion = v; self.step = .ready }
         } catch {
-            try? Self.fm.removeItem(at: stagedRoot)
-            try? Self.fm.removeItem(at: stagedTar)
+            try? Self.fm.removeItem(at: Self.stagedDir)
             await MainActor.run {
                 if self.step != .ready {
                     self.step = .failed((error as? LocalizedError)?.errorDescription ?? "\(error)")
@@ -229,6 +290,19 @@ final class EngineInstaller: ObservableObject {
         return "splash-\(pin.version)-\(h)-arm64-macos26"
     }
 
+    // The payload directory inside the staging area: the preferred (name-keyed) path when
+    // it carries a release.json, otherwise the one directory that does — the archive's own
+    // top-level name, which the install moves from.
+    static func findExtractedRoot(in staged: URL, preferring: URL) -> URL? {
+        if fm.fileExists(atPath: preferring.appendingPathComponent("release.json").path) { return preferring }
+        guard let names = try? fm.contentsOfDirectory(atPath: staged.path) else { return nil }
+        for n in names where n.hasPrefix("splash-") {
+            let c = staged.appendingPathComponent(n, isDirectory: true)
+            if fm.fileExists(atPath: c.appendingPathComponent("release.json").path) { return c }
+        }
+        return nil
+    }
+
     static func sha256(of url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
@@ -287,6 +361,19 @@ extension EngineInstaller {
     // main runloop so MainActor hops run, prints phase changes, exits 0/1.
     static func runCLI(port: Int) -> Int32 {
         setbuf(stdout, nil)
+        // Same preference as the GUI: a Homebrew engine at or above the pin is adopted
+        // instead of downloading a duplicate payload.
+        if let ext = externalEngineVersion(),
+           versionOrder(ext, defaultPin.version) != .orderedAscending {
+            do {
+                try adoptExternalEngine()
+                print("adopted Homebrew engine \(ext) at \(externalEngineRoot.path)")
+                print("engine \(currentReleaseVersion() ?? "?") → \(currentLink.path)")
+                return 0
+            } catch {
+                FileHandle.standardError.write(Data("adopt failed: \(error) — falling back to managed install\n".utf8))
+            }
+        }
         let inst = EngineInstaller()
         var code: Int32 = 1
         let done = DispatchSemaphore(value: 0)

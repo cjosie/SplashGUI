@@ -41,8 +41,9 @@ struct StatusTab: View {
                         Card("Free disk", MachineInfo.gb(MachineInfo.freeDisk),
                              note: "volume hosting the SSD cache tier",
                              help: "Free space on the volume that holds the SSD cache.")
-                        Card("Engine", model.engineVersion, note: "app-managed",
-                             help: "The Splash engine version the app installed and manages, at \(EngineInstaller.currentLink.path).")
+                        Card("Engine", model.engineVersion,
+                             note: EngineInstaller.currentIsExternal ? "Homebrew install" : "app-managed",
+                             help: "The Splash engine in use\(EngineInstaller.currentIsExternal ? ", adopted from the Homebrew install" : " that the app downloaded and manages"), at \(EngineInstaller.currentLink.path).")
                     }
 
                     Text("Prefix cache is in RAM, and the SSD tier keeps its KV pages and GDN states on disk, including across restarts when “Keep SSD cache across restarts” is on. Restarting the server clears the RAM part; the disk part survives it.")

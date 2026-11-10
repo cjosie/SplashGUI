@@ -566,8 +566,14 @@ final class AppModel: ObservableObject {
     // partial fields keep the pre-picker pinned behavior), .pinned never sees the override
     // fields, and .latest keeps the installed engine on a failed check — the compiled-in pin
     // would silently DOWNGRADE — while nothing-installed falls back to the compiled pin.
+    // `externalVersion` (Homebrew, if present) satisfies .pinned/.latest without a download
+    // when it is at or above the wanted build; .custom names an explicit payload and never
+    // accepts a stand-in. When external is true, start() adopts it (points `current` at the
+    // brew libexec) instead of calling ensureInstalled.
     nonisolated static func enginePlan(mode: EngineMode, customOverride: EnginePin?, installed: Bool,
-                                       checkUpdate: Bool, latest: EnginePin?) -> (ensure: Bool, override: EnginePin?) {
+                                       checkUpdate: Bool, latest: EnginePin?,
+                                       pinnedVersion: String, externalVersion: String?)
+        -> (ensure: Bool, override: EnginePin?, external: Bool) {
         var ensure = !installed || checkUpdate
         var override: EnginePin?
         switch mode {
@@ -584,7 +590,13 @@ final class AppModel: ObservableObject {
                 ensure = false
             }
         }
-        return (ensure, override)
+        var external = false
+        if mode != .custom, let ext = externalVersion {
+            let wanted = override?.version ?? pinnedVersion
+            if EngineInstaller.versionOrder(ext, wanted) != .orderedAscending { external = true }
+        }
+        if external { ensure = false }
+        return (ensure, override, external)
     }
 
     func start() {
@@ -619,13 +631,25 @@ final class AppModel: ObservableObject {
             // (enginePlan) so the harness can pin it.
             var resolved: EnginePin?
             if case .latest = self.config.engineMode { resolved = await EngineResolver.latest() }
-            let (ensure, override) = Self.enginePlan(
+            let externalVersion = EngineInstaller.externalEngineVersion()
+            let (ensure, override, external) = Self.enginePlan(
                 mode: self.config.engineMode, customOverride: self.config.enginePinOverride(),
-                installed: installed, checkUpdate: self.config.checkEngineUpdate, latest: resolved)
-            if !ensure, case .latest = self.config.engineMode {
+                installed: installed, checkUpdate: self.config.checkEngineUpdate, latest: resolved,
+                pinnedVersion: EngineInstaller.defaultPin.version, externalVersion: externalVersion)
+            if !ensure, !external, case .latest = self.config.engineMode {
                 self.server.note("- engine update check: GitHub unreachable, keeping the installed engine")
             }
-            if ensure {
+            if external {
+                // Skip the download: point `current` at the Homebrew payload.
+                do {
+                    try EngineInstaller.adoptExternalEngine()
+                } catch {
+                    self.startBlocked((error as? LocalizedError)?.errorDescription ?? "\(error)")
+                    self.phase = .stopped
+                    return
+                }
+                self.server.note("- engine: using the Homebrew install (\(externalVersion ?? "?")) — no download")
+            } else if ensure {
                 do {
                     try await self.engine.ensureInstalled(
                         port: self.config.run.port,
