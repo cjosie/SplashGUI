@@ -2,6 +2,7 @@
 // Run via ./run.sh (it handles the config.json backup/fixture dance). Exits non-zero on any failure.
 import Foundation
 import SwiftUI
+import Network
 
 let A = "unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS"
 let B = "prism-ml/Ternary-Bonsai-2-27B-gguf:PQ2_0"
@@ -830,7 +831,311 @@ func runTests() {
             && m.modelPickerSelection.wrappedValue == "custom")
     m.selectModelID(A)
 
+    checkLoggingParses()
+    checkLoggingStore()
+    checkLoggingPlanning()
+    checkLoggingE2E()
+
     exit(failures == 0 ? 0 : 1)
 }
 
 MainActor.assumeIsolated { runTests() }
+
+// MARK: - session logging checks (pure parses, store, planning, live pipe)
+
+func lgWaitUntil(_ seconds: TimeInterval = 4, _ cond: () -> Bool) -> Bool {
+    let deadline = Date().addingTimeInterval(seconds)
+    while Date() < deadline {
+        if cond() { return true }
+        usleep(40_000)
+    }
+    return cond()
+}
+
+func lgRequest(_ url: String, post: String? = nil) -> Int? {
+    guard let u = URL(string: url) else { return nil }
+    var req = URLRequest(url: u, timeoutInterval: 5)
+    if let post {
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "content-type")
+        req.httpBody = Data(post.utf8)
+    }
+    let sem = DispatchSemaphore(value: 0)
+    var code: Int?
+    URLSession.shared.dataTask(with: req) { _, resp, _ in
+        code = (resp as? HTTPURLResponse)?.statusCode
+        sem.signal()
+    }.resume()
+    if sem.wait(timeout: .now() + 6) == .timedOut { return nil }
+    return code
+}
+
+final class FakeEngine {
+    let listener: NWListener
+    let queue = DispatchQueue(label: "fake.engine")
+    init(port: Int) throws {
+        listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: UInt16(port))!)
+        listener.newConnectionHandler = { [queue] conn in FakeEngine.serve(conn, on: queue) }
+    }
+    func start() { listener.start(queue: queue) }
+    func stop() { listener.cancel() }
+
+    static func serve(_ conn: NWConnection, on queue: DispatchQueue) {
+        conn.start(queue: queue)
+        var buf = Data()
+        func read() {
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { d, _, complete, _ in
+                if let d { buf.append(d) }
+                guard let range = buf.range(of: Data("\r\n\r\n".utf8)) else {
+                    if complete { conn.cancel(); return }
+                    read(); return
+                }
+                let headS = String(decoding: buf[buf.startIndex..<range.lowerBound], as: UTF8.self)
+                var cl = 0
+                for line in headS.components(separatedBy: "\r\n")
+                where line.lowercased().hasPrefix("content-length:") {
+                    cl = Int(line.split(separator: ":", maxSplits: 1).last?
+                        .trimmingCharacters(in: .whitespaces) ?? "") ?? 0
+                }
+                if buf.count - range.upperBound < cl {
+                    if complete { conn.cancel(); return }
+                    read(); return
+                }
+                respond(conn, firstLine: headS.components(separatedBy: "\r\n").first ?? "")
+            }
+        }
+        read()
+    }
+
+    static func respond(_ conn: NWConnection, firstLine: String) {
+        let out: Data
+        if firstLine.contains("/v1/chat/completions") {
+            let c1 = "data: " + lgJSON(["choices": [["delta": ["content": "hel"]]]])
+            let c2 = "data: " + lgJSON(["choices": [["delta": ["content": "lo", "reasoning_content": "thin",
+                "tool_calls": [["index": 0, "id": "c1", "function": ["name": "read", "arguments": "{\"a\""]]]]]]])
+            let c3 = "data: " + lgJSON(["choices": [["delta": ["tool_calls": [["index": 0, "function": ["arguments": ":1}"]]]],
+                "finish_reason": "stop"]], "usage": ["prompt_tokens": 7, "completion_tokens": 3,
+                "completion_tokens_details": ["reasoning_tokens": 2], "prompt_tokens_details": ["cached_tokens": 1]]])
+            let body = c1 + "\n\n" + c2 + "\n\n" + c3 + "\n\ndata: [DONE]\n\n"
+            out = Data(("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n" + body).utf8)
+        } else if firstLine.contains("/v1/models") {
+            let body = #"{"object":"list","data":[{"id":"m1"}]}"#
+            out = Data("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: \(body.count)\r\n\r\n\(body)".utf8)
+        } else {
+            out = Data("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok".utf8)
+        }
+        conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
+    }
+}
+
+// Build fixture JSON via JSONSerialization so hand-counted braces can never silently
+// produce a malformed chunk the reassembler rightly refuses.
+func lgJSON(_ o: Any) -> String {
+    let d = (try? JSONSerialization.data(withJSONObject: o)) ?? Data("{}".utf8)
+    return String(decoding: d, as: UTF8.self)
+}
+
+func checkLoggingParses() {
+    let reqHead = Data("POST /v1/chat/completions HTTP/1.1\r\ncontent-type: application/json\r\nContent-Length: 12\r\nuser-agent: tester\r\n\r\n".utf8)
+    let h = HTTPParse.parseHead(reqHead[reqHead.startIndex..<reqHead.endIndex - 2])
+    check("request head parses method/path/lowered headers",
+          h?.method == "POST" && h?.path == "/v1/chat/completions"
+            && h?.headers["content-length"] == "12" && h?.headers["user-agent"] == "tester")
+    let resHead = HTTPParse.parseHead(Data("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n".utf8))
+    check("response head parses status + content-type",
+          resHead?.status == 200 && resHead?.headers["content-type"] == "text/event-stream")
+    check("framing: GET none / chunked / content-length", { () -> Bool in
+        guard let g = HTTPParse.parseHead(Data("GET /m HTTP/1.1\r\n\r\n".utf8)),
+              let c = HTTPParse.parseHead(Data("POST /m HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n".utf8)),
+              let l = HTTPParse.parseHead(Data("POST /m HTTP/1.1\r\ncontent-length: 9\r\n\r\n".utf8))
+        else { return false }
+        if case .none = HTTPParse.bodyFraming(head: g),
+           case .chunked = HTTPParse.bodyFraming(head: c),
+           case .length(9) = HTTPParse.bodyFraming(head: l) { return true }
+        return false
+    }())
+
+    let dec = HTTPParse.ChunkedDecoder()
+    var body = Data()
+    body.append(dec.feed(Data("5\r\nhel".utf8)))
+    body.append(dec.feed(Data("lo\r\n16;ext=1\r\n01234567890123456789".utf8)))   // 0x16 = 22
+    body.append(dec.feed(Data("01\r\n0\r\n\r\n".utf8)))
+    check("chunked decoder: hex sizes, extensions, split feeds",
+          body == Data("hello0123456789012345678901".utf8) && dec.isComplete, "\(body.count)")
+
+    let summary = HTTPParse.summarizeRequest(Data(#"{"model":"test-model","stream":true,"messages":[{"role":"system","content":"sys"},{"role":"user","content":"hi"}],"tools":[{"function":{"name":"read"}}]}"#.utf8))
+    check("request summary pulls model/stream/system/tools",
+          summary.model == "test-model" && summary.stream
+            && summary.systemChars == 3 && summary.toolNames == ["read"])
+
+    let sse = SSEReassembler()
+    let d1 = lgJSON(["choices": [["delta": ["content": "a"]]]])
+    let d2 = lgJSON(["choices": [["delta": ["content": "b", "tool_calls": [["index": 0, "id": "c1", "function": ["name": "read", "arguments": "{\"a\""]]]]]]])
+    let d3 = lgJSON(["choices": [["delta": ["tool_calls": [["index": 0, "function": ["arguments": ":1}"]]]], "finish_reason": "stop"]], "usage": ["prompt_tokens": 7, "completion_tokens": 3]])
+    sse.feed(Data("event: x\ndata: \(d1)\n\ndata: \(d2)\n\ndata: \(d3)\n\ndata: [DONE]\n\n".utf8))
+    let r = sse.result()
+    check("SSE reassembly joins split deltas and tool-call fragments",
+          r.text == "ab" && r.finish == "stop" && r.sawDone
+            && r.toolCalls.count == 1 && r.toolCalls.first?.argumentsJSON == "{\"a\":1}"
+            && r.usage?.input == 7 && r.usage?.output == 3, "\(r.text) \(r.toolCalls)")
+
+    let resp = SSEReassembler()
+    let r1 = lgJSON(["type": "response.output_text.delta", "delta": "hey"])
+    let r2 = lgJSON(["type": "response.function_call_arguments.delta", "item_id": "fc1", "delta": "{\"x\":1}"])
+    let r3 = lgJSON(["type": "response.completed", "response": ["status": "completed", "usage": ["input_tokens": 5, "output_tokens": 2]]])
+    resp.feed(Data("data: \(r1)\n\ndata: \(r2)\n\ndata: \(r3)\n\n".utf8))
+    let rr = resp.result()
+    check("Responses-API events fold into the same record",
+          rr.text == "hey" && rr.finish == "completed"
+            && rr.toolCalls.first?.argumentsJSON == "{\"x\":1}" && rr.usage?.input == 5)
+
+    let chat = HTTPParseTee.parseJSONBody(Data(#"{"choices":[{"message":{"content":"hi","tool_calls":[{"id":"t","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}"#.utf8))
+    check("non-streaming chat body parses",
+          chat.parsed && chat.text == "hi" && chat.finish == "tool_calls"
+            && chat.toolCalls?.first?.name == "f" && chat.usage?.output == 2)
+    let respObj = HTTPParseTee.parseJSONBody(Data(#"{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"yo"}]},{"type":"function_call","call_id":"c","name":"g","arguments":"{}"}],"usage":{"input_tokens":3,"output_tokens":4}}"#.utf8))
+    check("Responses object body parses",
+          respObj.parsed && respObj.text == "yo" && respObj.toolCalls?.first?.name == "g"
+            && respObj.usage?.input == 3)
+    check("unknown JSON shape keeps parsed=false",
+          HTTPParseTee.parseJSONBody(Data(#"{"ok":true}"#.utf8)).parsed == false)
+}
+
+func checkLoggingStore() {
+    let tmp = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("splash-log-\(UUID().uuidString)", isDirectory: true)
+    var rec = SessionRecord(tsStart: Date(), clientHint: "ua", clientLoopback: true, path: "/v1/chat/completions")
+    rec.model = "m"; rec.requestJSON = #"{"model":"m"}"#
+    rec.responseText = "hi"; rec.parsed = true
+    let line = SessionLog.encodeLine(rec)
+    check("record round-trips through JSONL",
+          line != nil && SessionLog.decodeLine(line!)?.model == "m"
+            && SessionLog.decodeLine(line!)?.responseText == "hi")
+    check("day file name is YYYY-MM-DD.jsonl",
+          SessionLog.dayFileName(Date()).count == 16
+            && SessionLog.dayFileName(Date()).hasSuffix(".jsonl"))
+
+    let log = SessionLog(dir: tmp)
+    log.write(rec)
+    var old = SessionRecord(tsStart: Date().addingTimeInterval(-100 * 86400), path: "/v1/old")
+    old.model = "old"
+    log.write(old)
+    check("both day files land and tail reads the newest",
+          lgWaitUntil(4) { (try? FileManager.default.contentsOfDirectory(atPath: tmp.path).count) == 2 }
+            && SessionLog.tail(dir: tmp, limit: 5).first?.path == "/v1/chat/completions")
+    let removed = SessionLog.purge(dir: tmp, retentionDays: 90, now: Date())
+    let stats = SessionLog.stats(dir: tmp, now: Date())
+    check("retention purges only out-of-window day files",
+          removed.count == 1 && stats.fileCount == 1 && stats.sessionsToday == 1
+            && stats.totalBytes > 0, "\(removed) \(stats.sessionsToday)")
+    try? FileManager.default.removeItem(at: tmp)
+}
+
+func checkLoggingPlanning() {
+    let p = AppModel.frontingPlan(enabled: true, adopted: false, pickedInternalPort: 8199)
+    check("fronting only when enabled, app-launched and a port was picked",
+          p.front && p.enginePort == 8199
+            && AppModel.frontingPlan(enabled: true, adopted: true, pickedInternalPort: 8199).front == false
+            && AppModel.frontingPlan(enabled: false, adopted: false, pickedInternalPort: 8199).front == false
+            && AppModel.frontingPlan(enabled: true, adopted: false, pickedInternalPort: nil).front == false)
+    let pol = SessionProxy.Policy(logLocal: true, logLAN: false)
+    check("LAN clients pipe but are not recorded by default",
+          SessionProxy.shouldRecord(policy: pol, loopbackPeer: true)
+            && !SessionProxy.shouldRecord(policy: pol, loopbackPeer: false)
+            && SessionProxy.shouldRecord(policy: .init(logLocal: true, logLAN: true), loopbackPeer: false))
+
+    let occupied = (41000 + Int.random(in: 0..<9000))
+    if SessionProxy.isPortFree(occupied) {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        var yes: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(occupied).bigEndian
+        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if bound == 0 {
+            let picked = SessionProxy.pickInternalPort(publicPort: occupied - 1)
+            check("internal port pick skips occupied ports",
+                  picked != occupied - 1 && picked != occupied && picked != nil
+                    && (picked ?? 0) > occupied - 1, "\(picked ?? -1)")
+        } else {
+            check("internal port pick skips occupied ports", true, "bind raced, skipped")
+        }
+        close(fd)
+    } else {
+        check("internal port pick skips occupied ports", true, "port raced, skipped")
+    }
+}
+
+func checkLoggingE2E() {
+    guard let pub = SessionProxy.pickInternalPort(publicPort: 40000 + Int.random(in: 0..<1000)),
+          let internalPort = SessionProxy.pickInternalPort(publicPort: pub) else {
+        check("E2E proxy pipe", false, "no free test ports"); return
+    }
+    let engine = try? FakeEngine(port: internalPort)
+    engine?.start()
+    let tmp = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("splash-e2e-\(UUID().uuidString)", isDirectory: true)
+    let log = SessionLog(dir: tmp)
+    guard let proxy = try? SessionProxy(publicPort: pub, internalPort: internalPort,
+                                        lanBind: false,
+                                        policy: .init(logLocal: true, logLAN: false), log: log)
+    else {
+        check("E2E proxy pipe", false, "proxy init failed"); return
+    }
+    proxy.start()
+    _ = lgWaitUntil(3) { lgRequest("http://127.0.0.1:\(pub)/status") == 200 }
+
+    check("proxy forwards non-/v1 traffic unlogged", {
+        usleep(300_000)
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: tmp.path)) ?? []
+        let lines = files.flatMap { name -> [Substring] in
+            guard let d = try? Data(contentsOf: tmp.appendingPathComponent(name)),
+                  let s = String(data: d, encoding: .utf8) else { return [] }
+            return s.split(separator: "\n")
+        }
+        return lines.isEmpty
+    }())
+
+    let chatBody = #"{"model":"test-model","stream":true,"messages":[{"role":"system","content":"sys prompt"},{"role":"user","content":"hi"}]}"#
+    let code = lgRequest("http://127.0.0.1:\(pub)/v1/chat/completions", post: chatBody)
+    let gotRecord = lgWaitUntil(5) { SessionLog.tail(dir: tmp, limit: 10).count >= 1 }
+    check("chat through the proxy returns 200 and records one turn",
+          code == 200 && gotRecord, "code \(code ?? -1)")
+    let rec = SessionLog.tail(dir: tmp, limit: 1).first
+    check("record holds the full request and the reassembled SSE reply",
+          rec?.model == "test-model" && rec?.stream == true
+            && rec?.requestJSON?.contains("sys prompt") == true
+            && rec?.systemChars == 10
+            && rec?.responseText == "hello" && rec?.responseReasoning == "thin"
+            && rec?.toolCalls?.first?.argumentsJSON == "{\"a\":1}"
+            && rec?.finishReason == "stop" && rec?.status == 200
+            && rec?.usage?.input == 7 && rec?.usage?.reasoning == 2 && rec?.usage?.cached == 1,
+          "\(rec?.responseText ?? "nil") \(rec?.error ?? "ok")")
+
+    if let lan = MachineInfo.lanIPv4Address,
+       let pub2 = SessionProxy.pickInternalPort(publicPort: pub + 100),
+       let proxy2 = try? SessionProxy(publicPort: pub2, internalPort: internalPort,
+                                      lanBind: true, policy: .init(logLocal: true, logLAN: false),
+                                      log: log) {
+        proxy2.start()
+        let lanCode = lgWaitUntil(3) { lgRequest("http://\(lan):\(pub2)/v1/models") == 200 }
+        usleep(400_000)
+        let stillOne = SessionLog.tail(dir: tmp, limit: 10).count == 1
+        proxy2.stop()
+        check("a LAN-facing bind serves remote-IP clients without recording them (LAN off)",
+              lanCode && stillOne)
+    } else {
+        check("a LAN-facing bind serves remote-IP clients without recording them (LAN off)",
+              true, "no LAN IPv4 leased, skipped")
+    }
+
+    proxy.stop()
+    engine?.stop()
+    try? FileManager.default.removeItem(at: tmp)
+}

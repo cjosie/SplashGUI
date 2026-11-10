@@ -41,6 +41,7 @@ EOF
 swiftc -swift-version 5 -o /tmp/splashgui-profiletest \
   "$CORE"/AppConfig.swift "$CORE"/AppModel.swift "$CORE"/ClientConfigs.swift \
   "$CORE"/EngineInstaller.swift "$CORE"/EngineResolver.swift \
-  "$CORE"/MachineInfo.swift "$CORE"/SplashClient.swift "$CORE"/SplashServer.swift main.swift
+  "$CORE"/MachineInfo.swift "$CORE"/SessionLog.swift "$CORE"/SessionProxy.swift \
+  "$CORE"/SplashClient.swift "$CORE"/SplashServer.swift main.swift
 
 /tmp/splashgui-profiletest

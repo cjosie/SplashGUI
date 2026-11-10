@@ -390,6 +390,12 @@ struct AppConfig: Codable, Equatable {
     // something already owns the port (the adopt path wins), and in the headless harness
     // (SPLASHGUI_TEST=1) so tests never spawn a server.
     var startOnLaunch: Bool = false
+    // Session logging via the fronting proxy (scratch/spec-logging-proxy.md). Applies on
+    // the next Start: the proxy can only take the public port while the app launches the
+    // serve itself. LAN clients are piped but NOT recorded unless loggingLanClients is on.
+    var loggingEnabled: Bool = false
+    var loggingLanClients: Bool = false
+    var loggingRetentionDays: Int = 90
 
     init() {}
 
@@ -401,6 +407,7 @@ struct AppConfig: Codable, Equatable {
         case engineVersionOverride, engineURLOverride, engineSHA256Override, checkEngineUpdate
         case engineMode
         case startOnLaunch
+        case loggingEnabled, loggingLanClients, loggingRetentionDays
     }
 
     init(from decoder: Decoder) throws {
@@ -419,6 +426,9 @@ struct AppConfig: Codable, Equatable {
         // factory defaults (the Codable trap).
         engineMode = EngineMode(rawValue: try c.decodeIfPresent(String.self, forKey: .engineMode) ?? "pinned") ?? .pinned
         startOnLaunch = try c.decodeIfPresent(Bool.self, forKey: .startOnLaunch) ?? false
+        loggingEnabled = try c.decodeIfPresent(Bool.self, forKey: .loggingEnabled) ?? false
+        loggingLanClients = try c.decodeIfPresent(Bool.self, forKey: .loggingLanClients) ?? false
+        loggingRetentionDays = try c.decodeIfPresent(Int.self, forKey: .loggingRetentionDays) ?? 90
     }
 
     func enginePinOverride() -> EnginePin? {
@@ -579,6 +589,10 @@ struct CatalogModel: Identifiable, Equatable {
                      targetFile: "Qwen3.8-27B-UD-IQ3_XXS.gguf",
                      sha256: "c0b7c3038681ed2e3040456c1dd45f9858b6c2290bed172c70388a94874f3eee",
                      qwen27BArch: true),
+        CatalogModel(id: "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF:IQ3_S", label: "Qwen3.8-Flash-Next IQ3_S",
+                     note: "for 96 GB Macs · 86 GB download · Most capable",
+                     approxBytes: 86_000_000_000, memoryGB: 96,
+                     supportsPleMemory: true, supportsSparseKvMemory: true),
         CatalogModel(id: "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF:Q2_0", label: "Qwen3.8-Flash-Next Q2_0",
                      note: "for 64 GB Macs · 69 GB download · Most capable",
                      approxBytes: 69_000_000_000, memoryGB: 64,

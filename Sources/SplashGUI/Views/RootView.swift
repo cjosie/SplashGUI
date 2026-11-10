@@ -44,6 +44,7 @@ struct RootView: View {
         case run = "Run"
         case provider = "Provider"
         case status = "Status"
+        case logging = "Logging"
 
         var id: String { rawValue }
 
@@ -52,6 +53,7 @@ struct RootView: View {
             case .run: return "server.rack"
             case .provider: return "powerplug"
             case .status: return "gauge"
+            case .logging: return "doc.text.magnifyingglass"
             }
         }
     }
@@ -77,6 +79,7 @@ struct RootView: View {
                     case .run: RunTab()
                     case .provider: ProviderTab()
                     case .status: StatusTab()
+                    case .logging: LoggingTab()
                     }
                 }
                 .safeAreaInset(edge: .bottom) { phaseFooter }
@@ -147,6 +150,7 @@ struct RootView: View {
                 let host = launched.lanAccess
                     ? (MachineInfo.lanIPv4Address ?? "127.0.0.1") : "127.0.0.1"
                 return "Ready · \(m) on " + host + ":" + String(launched.port)
+                    + (model.frontedEnginePort != nil ? " · logging" : "")
             }
             return "Ready · \(m)"
         case .stopping: return "Stopping…"

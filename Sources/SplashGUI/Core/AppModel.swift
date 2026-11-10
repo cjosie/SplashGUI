@@ -198,9 +198,25 @@ final class AppModel: ObservableObject {
         guard let launched = launchedRunConfig else { return false }
         return phase == .ready && launched != config.run
     }
-    private var client: SplashClient { SplashClient(port: config.run.port) }
+    private var client: SplashClient { SplashClient(port: frontedEnginePort ?? config.run.port) }
     private var pollTask: Task<Void, Never>?
     private var logTimer: Timer?
+    // Session logging (spec-logging-proxy). When the serve is fronted, the proxy holds the
+    // PUBLIC port and the engine runs on `frontedEnginePort`; status polling goes direct.
+    let sessionLog = SessionLog()
+    @Published var frontedEnginePort: Int?
+    private var proxy: SessionProxy?
+    // The Logging tab's "applies on next Start" hint: what the running serve was started with.
+    @Published var launchedLoggingEnabled = false
+
+    // Pure fronting rule (harness-pinned): front only when logging is on AND the app is
+    // launching the serve itself onto a picked free internal port. An adopted external
+    // serve never gets fronted — its port is already bound by someone else.
+    nonisolated static func frontingPlan(enabled: Bool, adopted: Bool, pickedInternalPort: Int?)
+        -> (front: Bool, enginePort: Int?) {
+        guard enabled, !adopted, let p = pickedInternalPort else { return (false, nil) }
+        return (true, p)
+    }
 
     init() {
         config = ConfigStore.shared.load()
@@ -248,6 +264,8 @@ final class AppModel: ObservableObject {
             if !(await self.adoptExistingServer()) { self.autoStartIfNeeded() }
         }
         refreshModelSizeCache()
+        // Retention sweep on launch; day-file names older than the window are deleted.
+        SessionLog.purge(dir: sessionLog.dir, retentionDays: config.loggingRetentionDays)
 
         engineVersion = engine.installedVersion
         engine.step = EngineInstaller.isInstalled ? .ready : .idle
@@ -318,6 +336,9 @@ final class AppModel: ObservableObject {
         AppModel.serverKillPID = pid
         launchedRunConfig = config.run
         server.note("- attached to existing splash on port \(config.run.port) (pid \(pid))")
+        if config.loggingEnabled {
+            server.note("- session logging inactive while attached to an externally started serve")
+        }
         server.spawnWatchdog(serverPID: pid, appPID: Int(ProcessInfo.processInfo.processIdentifier))
         phase = await client.ready() ? .ready : .starting
         startPolling()
@@ -666,12 +687,38 @@ final class AppModel: ObservableObject {
             do {
                 var run = self.config.run.effective(using: profile)
                 run.clearingUnsupportedMemoryKnobs(forModelID: self.config.run.modelID)
+                // Fronted mode: the proxy takes the public port; the engine gets an
+                // auto-picked loopback port behind it. No free port → serve starts
+                // unfronted with a note rather than failing the Start.
+                let picked = self.config.loggingEnabled
+                    ? SessionProxy.pickInternalPort(publicPort: self.config.run.port) : nil
+                let plan = Self.frontingPlan(enabled: self.config.loggingEnabled,
+                                             adopted: false, pickedInternalPort: picked)
+                if plan.front, let internalPort = plan.enginePort {
+                    run.port = internalPort
+                } else if self.config.loggingEnabled, picked == nil {
+                    self.server.note("- session logging: no free internal port near \(self.config.run.port); serving directly")
+                }
                 try self.server.launch(config: run,
                                        revision: self.catalogEntry?.revision,
                                        local: local.map {
                                            SplashServer.LocalLaunch(modelDir: $0.path, mmproj: $0.mmproj)
                                        })
+                if plan.front, let internalPort = plan.enginePort {
+                    let px = try SessionProxy(
+                        publicPort: self.config.run.port, internalPort: internalPort,
+                        lanBind: self.config.run.lanAccess,
+                        policy: .init(logLocal: true, logLAN: self.config.loggingLanClients),
+                        log: self.sessionLog)
+                    px.onNote = { msg in Task { @MainActor in self.server.note(msg) } }
+                    px.start()
+                    self.proxy = px
+                    self.frontedEnginePort = internalPort
+                    self.server.note("- session logging: proxy :\(self.config.run.port) → engine :\(internalPort)" +
+                                     (self.config.loggingLanClients ? " (LAN clients recorded)" : " (loopback clients only)"))
+                }
                 self.launchedRunConfig = self.config.run
+                self.launchedLoggingEnabled = self.config.loggingEnabled
                 if let pid = self.server.childPID {
                     AppModel.serverKillPID = pid
                     self.server.spawnWatchdog(serverPID: pid,
@@ -688,6 +735,10 @@ final class AppModel: ObservableObject {
     func stop() {
         pollTask?.cancel()
         pollTask = nil
+        proxy?.stop()
+        proxy = nil
+        frontedEnginePort = nil
+        launchedLoggingEnabled = false
         phase = .stopping
         launchedRunConfig = nil
         if let pid = adoptedPID {
