@@ -47,7 +47,9 @@ struct StatusSnapshot {
     var itlP50: Double? { number("metrics", "itl_ms", "p50") }
     var itlP95: Double? { number("metrics", "itl_ms", "p95") }
     var cacheHitRate: Double? { number("cache", "hit_rate") }
-    var cacheLookups: Int? { int("cache", "lookups") }
+    // Schema 8 (engine 1.6.0) renamed the lookup counter to probe_hashed_blocks; the old
+    // path stays as the fallback for engines that still emit it.
+    var cacheLookups: Int? { int("cache", "probe_hashed_blocks") ?? int("cache", "lookups") }
     var reusedTokens: Int? { int("cache", "reused_tokens") }
     var kvPagesActive: Int? { int("kv", "pages_active") }
     var kvBlockTokens: Int? { int("kv", "block_tokens") }
