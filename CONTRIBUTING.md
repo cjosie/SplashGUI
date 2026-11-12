@@ -10,10 +10,10 @@ SplashGUI is MIT-licensed and ships **no engine code**, it is a SwiftUI front-en
 - The app wraps `splash serve`: it builds the launch arguments, supervises the child process, polls `/status`, and derives run settings from the machine's Metal ceiling. The engine pulls and verifies models from Hugging Face itself, the app only pins and pre-flights hashes. 
 - **`Core/` is logic, `Views/` is presentation, `Core/AppModel` is the single `ObservableObject`.** Views bind to it directly; rules live in Core, not in views.
 - Some rules are deliberately single-sourced. Do not duplicate them:
-  - `SplashServer.buildArguments`: the one argv builder (the exact launch command).
-  - `ClientConfigs`: the one client-config writer (OpenCode / Zed / Claude Code / Codex).
+  - `SplashServer.buildArguments`: the one argv builder (the exact launch command, including the LAN `--allowed-host` list).
+  - `ClientConfigs`: the one client-config writer (OpenCode / Zed / Claude Code / Codex / Pi).
   - `AppModel.enginePlan`: the pure (nonisolated static) engine-source mode table:
-    `pinned` ignores custom fields, `custom` requires all three, `latest` keeps the installed engine when the update check fails (never a silent downgrade).
+    `pinned` ignores custom fields, `homebrew` takes the brew payload at any version, `custom` requires all three, `latest` keeps the installed engine when the update check fails (never a silent downgrade).
   - `AppModel.portValid`, `AppModel.providerContextTokens`, `AppPaths.dataDir`, `CatalogModel.weightsBytes`, `EngineInstaller.isInstalled`.
 
 ### Repo map
@@ -21,19 +21,23 @@ SplashGUI is MIT-licensed and ships **no engine code**, it is a SwiftUI front-en
 ```
 Sources/SplashGUI/
 ├── Core/
-│   ├── AppConfig.swift        # Codable config (schema 6), model catalog, AppPaths, ConfigStore
-│   ├── AppModel.swift         # live state: enginePlan, server lifecycle, status poll, bindings
+│   ├── AppConfig.swift        # Codable config (schema 7), model catalog, AppPaths, ConfigStore
+│   ├── AppModel.swift         # live state: enginePlan, server lifecycle, 1s status poll + performance sampler, bindings
 │   ├── ClientConfigs.swift    # client config text generators (never edits a tool's config in place)
-│   ├── EngineInstaller.swift  # pinned engine download/install + headless CLI
+│   ├── EngineInstaller.swift  # pinned engine download/install + Homebrew adoption + headless CLI
 │   ├── EngineResolver.swift   # latest-release resolver (GitHub API) → EnginePin, nil on any failure
 │   ├── MachineInfo.swift      # RAM/GPU/disk probes, AutoProfile (27B-arch gated), HF cache paths
+│   ├── PerformanceLog.swift   # JSONL /status samples (day files, tick gating, stats, CSV export)
+│   ├── SessionLog.swift       # JSONL session store (day files, retention purge, tail, stats)
+│   ├── SessionProxy.swift     # logging front: byte pipe on the public port + HTTP/SSE parse layer
 │   ├── SplashClient.swift     # /status decoder (StatusSnapshot) + HTTP client
 │   └── SplashServer.swift     # serve process launch, argv builder, LogRing
 └── Views/
     ├── RootView.swift         # @main, sidebar, custom title bar, footer, headless probes
     ├── SettingsLayout.swift   # full-width SettingsPage / SettingsSection cards
     ├── RunTab.swift           # Model & Server + Engine + log pane
-    ├── ProviderTab.swift      # client picker, sampling, config preview/copy/save
+    ├── LoggingTab.swift       # session + performance logging, storage stats, live tail
+    ├── ProviderTab.swift      # client picker, LAN-host toggle, sampling, config preview/copy/save
     ├── StatusTab.swift        # memory bar, headline cards, chart, metric grid
     └── StatusWidgets.swift    # title-bar controls, chips, fields, MemoryBar/TimeSeriesChart
 scripts/
@@ -42,7 +46,7 @@ scripts/
 └── profile-test/              # headless regression harness (see Tests)
 ```
 
-Runtime state lives in `~/Library/Application Support/SplashGUI` (config.json, engine installs). The app and the `/Applications` copy share that directory and the server port, don't run both at once.
+Runtime state lives in `~/Library/Application Support/SplashGUI` (config.json, engine installs, `logs/sessions`, `logs/performance`). The app and the `/Applications` copy share that directory and the server port, don't run both at once.
 
 ## Build
 
@@ -56,12 +60,13 @@ scripts/bundle-app.sh --open    # ad-hoc signed build/SplashGUI.app
 ## Tests
 
 ```sh
-scripts/profile-test/run.sh     # the headless harness (~88 assertions against the real AppModel)
+scripts/profile-test/run.sh     # the headless harness (185 assertions against the real AppModel)
 ```
 
 - **Quit SplashGUI first.** The harness refuses to run while the app is up: it trades your live `config.json` for a fixture and restores it via a trap on exit. Note that `HOME=<tmp>` does *not* redirect `applicationSupportDirectory` on macOS. Tests always touch the real data dir, which is why the backup/restore exists.
 - The harness exports `SPLASHGUI_TEST=1` so `AppModel` init doesn't spawn a real engine when `startOnLaunch` is on. Keep that guard when hand-rolling headless runs (compile `Core/*.swift` plus a throwaway `main.swift` - the file must be named exactly `main.swift` for top-level code).
 - **Every new behavior gets a harness check.** Extend an existing check or table before adding one. The maintainer mutation-proves load-bearing checks (break the code, watch the specific check fail).
+- The harness's `swiftc` list is explicit. Add any new `Core/*.swift` file to `scripts/profile-test/run.sh` or the harness won't compile it.
 
 The app binary also doubles as a CLI, useful for verification and CI:
 
@@ -89,12 +94,12 @@ The synthesized `Decodable` throws on a **missing** non-optional key even when t
 - macOS sizes `.toolbar` items to content, so a stretching item collapses. The server controls live in the custom 54 pt `RootView.titleBar` instead, not a `.toolbar`.
 - Long inline view trees hit the type-checker limit ("conform to TableRowContent" cascades). Extract columns/sections into computed properties.
 - Labels **hug** their text; alignment comes from `Grid` columns, not fixed-width label frames (fixed frames caused the dead gaps). The two documented exceptions are deliberate local alignments (Provider sampling rows, `LabeledField` value columns).
-- **No animation anywhere.** All state movement comes from the 2s status poll.
+- **No animation anywhere.** All state movement comes from the 1s status poll.
 - **System colors only.** No hex/RGB literals; dark mode comes free from that rule.
 
 ### UI copy
 
-- English, sentence case, try to keep em dashes down (especially on anything user-facing) unless you're quoting Dragon's Dogma dialogue.
+- English, sentence case, no em dashes in user-facing copy unless you're quoting Dragon's Dogma dialogue.
 - Prefer `.help(...)` tooltips over inline prose; inline `.caption` only for facts a user needs without hovering. A tooltip that quotes a number **names its source** (model card, Metal ceiling, engine's own limit). Never present a value as arbitrary.
 - Applying card values is an explicit click ("Reset to model card", the thinking-off link), never a side effect of switching models or effort.
 - The footer is the single error surface; there is no error banner.
@@ -116,6 +121,8 @@ Facts worth knowing before touching server integration:
 - Sampling: there are no serve-level defaults; omitted fields fall back to the engine's per-request defaults (temperature 1.0 / top_p 0.95 / top_k 20). On 1.3.2+ every sampling field is accepted **except `logit_bias`** (400). Model-card values are the app's defaults source; card asks the engine refuses are stated in the UI, not silently dropped.
 - `--max-cache-disk`: `"auto"` omits the flag (engine follows volume free space), `"0"` disables the SSD tier; `--persistent-cache` is refused without a non-zero quota, so the app must not pass it alongside `"0"`.
 - `--idle-release` (default 10 m) unwires weights when idle; the next request pays a ~4–6 s restore plus a slower first prefill. The app defaults to `60m`.
+- **LAN serving needs `--allowed-host <LAN IP>`.** Engine 1.6.x accepts only the bind address, loopback, and names given with `--allowed-host`; `0.0.0.0` is excluded. The app passes the leased LAN address whenever "Serve on LAN" is on. With logging fronted, the engine binds loopback and the proxy is the only LAN-facing listener, but the allowed host still has to ride through.
+- **Homebrew is a first-class engine source.** A `brew install splash` payload at `/opt/homebrew/opt/splash/libexec` mirrors the tarball root, so adoption just points `current` at it. `homebrew` mode takes it at any version (brew can lag the pin); `pinned` and `latest` adopt it only at or above the wanted build. Schema 7 flips the untouched `pinned` default to `homebrew` when one is detected.
 - Model targets are Hub IDs only (`owner/repo[:VARIANT]`, the variant is part of the store-link name). The catalog follows the engine's own `install/suggested-models.tsv` and carries revision+sha256 pins only on rows verified on hardware. The pre-flight hash check exists because the engine's own startup verify only re-checks paths and byte counts.
 - Stopping a serve by hand: kill the **Python launcher** first (or in the same batch as the native child), or the launcher auto-restarts the engine. `lsof -i :PORT` also matches TIME_WAIT sockets, don't gate on it.
 - Auto-sizing (`MachineInfo.autoProfile`) keys on `recommendedMaxWorkingSetSize` (the Metal wired ceiling), **not** free RAM. macOS keeps RAM resident, so `availableRAM` is misleading. It is gated to the 27B-arch catalog rows (one measured KV constant); other archs and custom IDs return nil so the engine self-sizes. That is a documented semantic ("Splash auto-sizes"), not a bug.
@@ -139,6 +146,7 @@ scripts/release.sh    # tags splashgui/v<version>, pushes main + tag, gh release
 - Bump `Resources/Info.plist` version + build first; the build counter stays monotonic.
 - **Never move a published tag.** Re-tag forward instead.
 - `release.sh` does a plain push: if history was rewritten (squash), force-push `main` as its own step *before* running it.
+- If `gh` can't infer the repo from your remotes (for example, a mirror plus a GitHub push URL), pass `--repo owner/name` to `gh release create`.
 - Only the app binary is signed/notarized. The engine is downloaded via URLSession (no quarantine xattr) and runs as a child process under its own signature, it does not need ours.
 
 ## Notes for AI agents
