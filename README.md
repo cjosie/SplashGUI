@@ -5,12 +5,17 @@ A native macOS SwiftUI frontend for the [Splash](https://github.com/incoai/splas
 SplashGUI is only a frontend. The engine binary is downloaded from the upstream project at first launch; see [the engine's README](https://github.com/incoai/splash) for how the engine itself works.
 
 ## Features
-The top bar is always present, and shows engine status (while loading) and context usage (once loaded). It has a prefill/decode block that'll flip green for whichever the model is currently doing, the server URL (and configurable port setting), the apply & restart button, and the start/stop button. There's 3 tabs with additional settings and information:
+The top bar is always present, and shows engine status (while loading) and context usage (once loaded). It has a prefill/decode block that'll flip green for whichever the model is currently doing, the server URL (and configurable port setting), the apply & restart button, and the start/stop button. There's 4 tabs with additional settings and information:
 ![SplashGUI run tab, showing main settings](images/Run.png)
-Run tab: Model picker, settings requiring a restart, default reasoning level, engine version settings. Toggling "Auto" will pick context, memory, SSD cache, and KV Cache quantization based on hardware/Splash engine defaults. Optional toggles to disable the splash web chat server and the vision heads (the latter will save a smidge of VRAM), host to LAN, skip the huggingface check, etc.
+Run tab: Model picker, settings requiring a restart, default reasoning level, engine version settings. Now supports finding a Homebrew install of Splash, so it won't re-download the engine if you already installed it that way. 
+
+Toggling "Auto" will pick context, memory, SSD cache, and KV Cache quantization based on hardware/Splash engine defaults. Optional toggles to disable the splash web chat server and the vision heads (the latter will save a smidge of VRAM), host to LAN, skip the huggingface check, etc.
+
+![logging tab, showing log options, exports, and a list of recent log events ](images/Logging.png)
+Logging tab: Toggle logging local sessions, LAN sessions, and choose retention. Separately, you can log the same #s from the Status tab, on 1, 5, or 10 second intervals. Both logging options emit json files, performance logging also has a CSV export option. Logging won't kick in until the server is restarted, as it uses a loopback proxy between the client and engine. 
 
 ![provider tab, showing temperature and opencode/zed/etc json template settings](images/Provider.png)
-Provider tab: Temperature, top-p/k settings, and other on-the-fly adjustable ones. The json template updates with the settings you pick here and on run, for easy copy-pasting into various service configs (I mostly use OpenCode V2). 
+Provider tab: Temperature, top-p/k settings, and other on-the-fly adjustable ones. Toggle LAN IP on/off and it'll flip from filling the localhost or LAN IP, making it easy to paste over to LAN machines without manually correcting the IP. The json template updates with the settings you pick here and on run, for easy copy-pasting into various service configs (I mostly use OpenCode V2 and Pi). 
 
 ![status tab, displaying token per second and other stats, plus a chart graphing the main ones](images/Status.png)
 Status tab: monitoring. Shows time to first token, prefill, decode, draft acceptance, cache hit, etc. Graphs prefill tok/s, decode tok/s, cache hit percentage, and draft accept percentage. 
@@ -23,9 +28,9 @@ Status tab: monitoring. Shows time to first token, prefill, decode, draft accept
 
 ## Install
 
-Download the latest `SplashGUI-<version>.dmg` from [Releases](https://github.com/cjosie/SplashGUI/releases), open it, and drag SplashGUI to `/Applications`. It is signed with a Developer ID certificate and notarized, so Gatekeeper opens it without any right-click workaround.
+Download the latest `SplashGUI-<version>.dmg` from [Releases](https://github.com/cjosie/SplashGUI/releases), open it, and drag SplashGUI to `/Applications`. It is signed and notarized. 
 
-On first launch the app downloads the Splash engine into its application support directory. Model weights are downloaded from Hugging Face when you start a model.
+On first launch the app checks for a Homebrew install, if not present then it downloads the Splash engine into its application support directory. Model weights are downloaded from Hugging Face when you start a model.
 
 ## The model catalogue
 
@@ -64,7 +69,7 @@ Custom entries are unpinned (no revision/hash pre-flight) until saved to the lis
 
 While the server is running it exposes an OpenAI-compatible API at `http://localhost:8095/v1` (port configurable on the Run tab). Any client that speaks that API can point at it. For a quick start without any external tool, the engine also serves a built-in web chat page in the browser ("Built-in web chat page" toggle, on by default).
 
-Turn on "Serve on LAN" (Run tab) to let other machines on your network connect: the server binds every interface and the title bar shows this Mac's LAN address to copy. There is no API key — anyone on the network can use the model, so use it on a trusted network. macOS may prompt to allow incoming connections for the Splash engine the first time.
+Turn on "Serve on LAN" (Run tab) to let other machines on your network connect: the server binds every interface and the title bar shows this Mac's LAN address to copy. There is no API key, anyone on the network can use the model, so use it on a trusted network. macOS may prompt to allow incoming connections for the Splash engine the first time.
 
 ## Building from source
 
