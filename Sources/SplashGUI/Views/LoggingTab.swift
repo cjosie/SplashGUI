@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 // Session logging controls and the live tail (scratch/spec-logging-proxy.md). Logging is
 // opt-in and full-fidelity: whole prompts, replies, reasoning and tool calls as JSONL,
@@ -8,6 +9,7 @@ import AppKit
 struct LoggingTab: View {
     @EnvironmentObject var model: AppModel
     @State private var stats = SessionLog.Stats()
+    @State private var perfStats = PerformanceLog.Stats()
     @State private var tail: [SessionRecord] = []
 
     var body: some View {
@@ -27,6 +29,7 @@ struct LoggingTab: View {
                 Divider()
                 Toggle("Also record LAN clients", isOn: $model.config.loggingLanClients)
                     .disabled(!model.config.run.lanAccess)
+                    .help("Takes effect immediately while the proxy is running. Off keeps LAN clients working through the proxy but unrecorded.")
                 if model.config.run.lanAccess && model.config.loggingEnabled {
                     Label(model.config.loggingLanClients
                           ? "LAN clients are recorded: machines on your network have their turns logged too."
@@ -45,7 +48,7 @@ struct LoggingTab: View {
                 }
                 .frame(maxWidth: 240, alignment: .leading)
                 HStack(spacing: 16) {
-                    Text("\(stats.sessionsToday) sessions today · \(bytes(stats.totalBytes)) in \(stats.fileCount) file(s)")
+                    Text("\(String(stats.sessionsToday)) sessions today · \(bytes(stats.totalBytes)) in \(String(stats.fileCount)) file(s)")
                     Button("Open log folder") { NSWorkspace.shared.open(model.sessionLog.dir) }
                     Button("Refresh") { load() }
                 }
@@ -55,7 +58,39 @@ struct LoggingTab: View {
                         .font(.callout)
                         .foregroundStyle(.orange)
                 }
-                Text("Full prompts, replies, reasoning and tool calls, one JSON object per request at \(model.sessionLog.dir.path). Point clients at http://127.0.0.1:\(model.config.run.port)/v1 as always; while logging is on, the app sits between them and the engine.")
+                Text(verbatim: "Full prompts, replies, reasoning and tool calls, one JSON object per request at \(model.sessionLog.dir.path). Point clients at http://127.0.0.1:\(model.config.run.port)/v1 as always; while logging is on, the app sits between them and the engine.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            SettingsSection("Performance") {
+                Toggle("Log performance samples", isOn: $model.config.performanceLoggingEnabled)
+                    .help("Writes the same /status numbers the Status tab shows — TTFT, prefill/decode tok/s, draft acceptance, cache hit, scheduler and memory — to a JSONL day file while the server is prefilling or generating. It rides the existing status poll, so it adds no requests to the engine.")
+                HStack(spacing: 6) {
+                    Text("Sample every")
+                        .fixedSize(horizontal: true, vertical: false)
+                    Picker("Sample every", selection: $model.config.performanceLogInterval) {
+                        Text("1 second").tag(1)
+                        Text("5 seconds").tag(5)
+                        Text("10 seconds").tag(10)
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    .disabled(!model.config.performanceLoggingEnabled)
+                    Spacer()
+                }
+                HStack(spacing: 16) {
+                    Text("\(String(perfStats.samplesToday)) samples today · \(bytes(perfStats.totalBytes)) in \(String(perfStats.fileCount)) file(s)")
+                    Button("Open folder") { NSWorkspace.shared.open(model.performanceLog.dir) }
+                    Button("Export CSV…") { exportPerformanceCSV() }
+                    Button("Refresh") { load() }
+                }
+                .font(.callout)
+                if let err = model.performanceLog.lastWriteError {
+                    Label("Performance log write problem: \(err)", systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                }
+                Text("One JSON object per sample at \(model.performanceLog.dir.path), written while the server is prefilling or generating (idle periods are gaps). Retention follows the Storage setting above. Export CSV writes every retained sample, oldest first.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -94,14 +129,34 @@ struct LoggingTab: View {
 
     private func load() {
         let log = model.sessionLog
+        let perf = model.performanceLog
         Task.detached(priority: .utility) {
             let s = SessionLog.stats(dir: log.dir)
             let t = SessionLog.tail(dir: log.dir, limit: 20)
+            let ps = PerformanceLog.stats(dir: perf.dir)
             await MainActor.run {
                 stats = s
                 tail = t
+                perfStats = ps
             }
         }
+    }
+
+    private func exportPerformanceCSV() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "splash-performance-\(Self.dayStamp()).csv"
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let csv = PerformanceLog.csv(dir: model.performanceLog.dir)
+            try? csv.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private static func dayStamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: Date())
     }
 }
 
@@ -125,7 +180,7 @@ private struct SessionRow: View {
                     Text(e).font(.caption).foregroundStyle(.red)
                 }
                 if let u = record.usage {
-                    Text("\(u.input ?? 0)→\(u.output ?? 0)t").font(.caption).foregroundStyle(.secondary)
+                    Text("\(String(u.input ?? 0))→\(String(u.output ?? 0))t").font(.caption).foregroundStyle(.secondary)
                 }
                 Text(record.finishReason ?? (record.status.map { "\($0)" } ?? ""))
                     .font(.caption).foregroundStyle(.secondary)

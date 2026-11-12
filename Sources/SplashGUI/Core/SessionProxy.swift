@@ -329,14 +329,22 @@ final class SessionProxy: @unchecked Sendable {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "splashgui.sessionproxy")
     private var flows: [ObjectIdentifier: Flow] = [:]
-    private let policy: Policy
+    // The policy is mutable so the Logging tab's "Also record LAN clients" toggle takes effect
+    // on the next request, not the next Start. Guarded because the UI writes it on the main
+    // thread while the proxy queue reads it.
+    private let policyLock = NSLock()
+    private var storedPolicy: Policy
+    private var policy: Policy {
+        policyLock.lock(); defer { policyLock.unlock() }
+        return storedPolicy
+    }
     private let log: SessionLog
     var onNote: ((String) -> Void)?     // fires on a background queue; callers hop
 
     init(publicPort: Int, internalPort: Int, lanBind: Bool, policy: Policy, log: SessionLog) throws {
         self.publicPort = publicPort
         self.internalPort = internalPort
-        self.policy = policy
+        self.storedPolicy = policy
         self.log = log
         guard let port = NWEndpoint.Port(rawValue: UInt16(publicPort)) else {
             throw InstallError.preflight("Logging proxy port \(publicPort) is out of range.")
@@ -361,12 +369,17 @@ final class SessionProxy: @unchecked Sendable {
         flows.removeAll()
     }
 
+    // Live policy change from the Logging tab; applies to requests that arrive after it.
+    func updatePolicy(_ p: Policy) {
+        policyLock.lock(); storedPolicy = p; policyLock.unlock()
+    }
+
     private func accept(_ client: NWConnection) {
-        var loopback = true
-        if case let .hostPort(host, _) = client.endpoint {
-            let h = String(describing: host)
-            loopback = h.hasPrefix("127.") || h == "::1" || h == "localhost"
-        }
+        // `endpoint` is the peer for a listener-accepted connection; `currentPath` is the
+        // authoritative source once the path exists. Unknown shapes count as remote, so a
+        // LAN client is never recorded by accident when the toggle is off.
+        let peer = client.currentPath?.remoteEndpoint ?? client.endpoint
+        let loopback = Self.isLoopbackEndpoint(peer)
         let upstream = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(internalPort))!, using: .tcp)
         let flow = Flow(client: client, upstream: upstream, loopback: loopback,
                         policy: policy, log: log, queue: queue,
@@ -381,6 +394,14 @@ final class SessionProxy: @unchecked Sendable {
     // Pure rule the harness pins: does this peer get RECORDED (everything always gets piped)?
     nonisolated static func shouldRecord(policy: Policy, loopbackPeer: Bool) -> Bool {
         loopbackPeer ? policy.logLocal : policy.logLAN
+    }
+
+    // Loopback peers are this Mac's own clients. IPv4-mapped IPv6 normalizes to "127.x" in
+    // NWEndpoint.Host's description, so the prefix check covers it.
+    nonisolated static func isLoopbackEndpoint(_ endpoint: NWEndpoint) -> Bool {
+        guard case let .hostPort(host, _) = endpoint else { return false }
+        let h = String(describing: host).lowercased()
+        return h == "localhost" || h == "::1" || h.hasPrefix("127.")
     }
 
     // Free-port pick for the engine behind the proxy: probe-bind starting at public+1.

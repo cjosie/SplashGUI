@@ -42,9 +42,9 @@ struct SplashGUIApp: App {
 struct RootView: View {
     enum Section: String, CaseIterable, Identifiable {
         case run = "Run"
+        case logging = "Logging"
         case provider = "Provider"
         case status = "Status"
-        case logging = "Logging"
 
         var id: String { rawValue }
 

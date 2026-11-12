@@ -9,6 +9,7 @@ enum ProviderClient: String, CaseIterable, Identifiable {
     case zed = "Zed"
     case claudeCode = "Claude Code"
     case codex = "Codex"
+    case pi = "Pi"
 
     var id: String { rawValue }
 
@@ -18,13 +19,14 @@ enum ProviderClient: String, CaseIterable, Identifiable {
 
     // Which sampling fields actually reach this client's requests. OpenCode merges the model's
     // `body` into the request body verbatim (V2; verified live against 2.2.2 with an echo
-    // server); Zed carries temperature only (agent.model_parameters); Claude Code and Codex
-    // expose no sampling knobs — their requests set what they themselves want.
+    // server); Zed carries temperature only (agent.model_parameters); Claude Code, Codex and
+    // Pi expose no sampling knobs — their requests set what they themselves want.
     func carries(_ field: SamplingField) -> Bool {
         switch self {
         case .opencode: return field != .maxTokens
         case .zed: return field == .temperature
         case .claudeCode, .codex: return false
+        case .pi: return field != .maxTokens
         }
     }
 
@@ -34,6 +36,7 @@ enum ProviderClient: String, CaseIterable, Identifiable {
         case .zed: return "settings.json for Zed (AI section)"
         case .claudeCode: return "settings.json: the env block for ~/.claude/settings.json"
         case .codex: return "config.toml for ~/.codex/config.toml"
+        case .pi: return "models.json: merge this providers block into ~/.pi/agent/models.json"
         }
     }
 
@@ -43,6 +46,7 @@ enum ProviderClient: String, CaseIterable, Identifiable {
         case .zed: return "zed-splash-settings.json"
         case .claudeCode: return "claude-code-splash-env.json"
         case .codex: return "codex-splash-config.toml"
+        case .pi: return "pi-splash-models.json"
         }
     }
 
@@ -64,12 +68,19 @@ struct ClientConfigContext {
     let client: ProviderClient
     let modelID: String
     let label: String
+    // The machine the client runs on: loopback for this Mac, the LAN address for another one.
+    var host: String = "127.0.0.1"
     let port: Int
     let contextTokens: Int
     let inputModalities: [String]
     let sampling: SamplingDefaults
+    // The model card's thinking-off set, when the model has a card. Pi writes it as
+    // samplingParamsByThinkingLevel.off so no-think turns can use different values.
+    var offSampling: SamplingDefaults? = nil
     // Reasoning levels this model accepts; defaults to every level Splash's API takes.
     var efforts: [String] = CatalogModel.allEfforts
+    // Whether the server renders a later system message in place (Pi's compat flag).
+    var laterSystem: Bool = false
 }
 
 enum ClientConfigs {
@@ -85,6 +96,7 @@ enum ClientConfigs {
         case .zed: return zed(ctx)
         case .claudeCode: return claudeCode(ctx)
         case .codex: return codex(ctx)
+        case .pi: return pi(ctx)
         }
     }
 
@@ -165,7 +177,7 @@ enum ClientConfigs {
                     "name": "SplashGUI",
                     "package": "@opencode/ai/providers/openai-compatible",
                     "settings": [
-                        "baseURL": "http://127.0.0.1:\(ctx.port)/v1",
+                        "baseURL": "http://\(ctx.host):\(ctx.port)/v1",
                         "apiKey": "local",
                     ],
                     "models": [ctx.modelID: model],
@@ -204,7 +216,7 @@ enum ClientConfigs {
             "language_models": [
                 "openai_compatible": [
                     "splash": [
-                        "api_url": "http://127.0.0.1:\(ctx.port)/v1",
+                        "api_url": "http://\(ctx.host):\(ctx.port)/v1",
                         "available_models": [model],
                     ]
                 ]
@@ -228,7 +240,7 @@ enum ClientConfigs {
         // bare server URL — Claude Code appends /v1/messages itself. No sampling fields:
         // Claude Code sets its own per request.
         let env: [String: Any] = [
-            "ANTHROPIC_BASE_URL": "http://127.0.0.1:\(ctx.port)",
+            "ANTHROPIC_BASE_URL": "http://\(ctx.host):\(ctx.port)",
             "ANTHROPIC_AUTH_TOKEN": "local",
             "ANTHROPIC_MODEL": ctx.modelID,
             "ANTHROPIC_DEFAULT_OPUS_MODEL": ctx.modelID,
@@ -255,9 +267,72 @@ enum ClientConfigs {
 
         [model_providers.splash]
         name = "Splash"
-        base_url = "http://127.0.0.1:\(ctx.port)/v1"
+        base_url = "http://\(ctx.host):\(ctx.port)/v1"
         env_key = "SPLASH_API_KEY"
         wire_api = "responses"
         """
+    }
+
+    // MARK: - Pi
+
+    // Mirrors the engine's `splash pi` connector (install/clients.py _write_pi_provider):
+    // a provider named for the server, an openai-completions endpoint, and one model entry.
+    // Pi reads custom providers from models.json in its agent directory; the block merges
+    // beside the user's other providers.
+    private static func pi(_ ctx: ClientConfigContext) -> String {
+        let provider = ctx.port == 8095 ? "splash" : "splash-\(ctx.port)"
+        var model: [String: Any] = [
+            "id": ctx.modelID,
+            "reasoning": true,
+            // Pi sends no effort when thinking is off, which leaves the template's default;
+            // "none" turns thinking off.
+            "thinkingLevelMap": ["off": "none"],
+            // Pi accepts only text and image; any other entry invalidates the whole file.
+            "input": ctx.inputModalities.contains("image") ? ["text", "image"] : ["text"],
+            "contextWindow": ctx.contextTokens,
+            // Pi lowers this per request to what its context leaves; the engine writes the
+            // same 32,768 allowance.
+            "maxTokens": 32_768,
+        ]
+        if ctx.laterSystem {
+            // Pi otherwise folds the system messages it adds as a session goes on into the
+            // first one, which changes the prompt from its start and makes the server read
+            // it all again.
+            model["compat"] = ["supportsMidConvoSystemMessages": true]
+        }
+        // Pi's free-form sampling defaults, merged into every request. The card's thinking-off
+        // set rides beside them so no-think turns can use different values (Pi's level key is
+        // "off"; Splash's effort name is "none").
+        var sampling: [String: Any] = [
+            "temperature": decimal(ctx.sampling.temperature),
+            "top_p": decimal(ctx.sampling.topP),
+            "top_k": ctx.sampling.topK,
+            "presence_penalty": decimal(ctx.sampling.presencePenalty),
+            "min_p": decimal(ctx.sampling.minP),
+        ]
+        if let seed = ctx.sampling.seed { sampling["seed"] = seed }
+        model["samplingParams"] = sampling
+        if let off = ctx.offSampling {
+            model["samplingParamsByThinkingLevel"] = [
+                "off": [
+                    "temperature": decimal(off.temperature),
+                    "top_p": decimal(off.topP),
+                    "top_k": off.topK,
+                    "presence_penalty": decimal(off.presencePenalty),
+                    "min_p": decimal(off.minP),
+                ]
+            ]
+        }
+        let root: [String: Any] = [
+            "providers": [
+                provider: [
+                    "baseUrl": "http://\(ctx.host):\(ctx.port)/v1",
+                    "api": "openai-completions",
+                    "apiKey": "local",
+                    "models": [model],
+                ]
+            ]
+        ]
+        return json(root)
     }
 }

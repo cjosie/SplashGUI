@@ -26,6 +26,8 @@ struct RunTab: View {
                         .fixedSize(horizontal: true, vertical: false)
                     Picker("Engine source", selection: $model.config.engineMode) {
                         Text("This build's pin (\(EngineInstaller.defaultPin.version))").tag(EngineMode.pinned)
+                        Text(model.homebrewEngineVersion.map { "Homebrew install (\($0))" }
+                             ?? "Homebrew install (not found)").tag(EngineMode.homebrew)
                         Text("Always latest release").tag(EngineMode.latest)
                         Text("Custom pin").tag(EngineMode.custom)
                     }
@@ -33,13 +35,17 @@ struct RunTab: View {
                     .fixedSize()
                     Spacer()
                 }
-                .help("Pinned: always run the engine version this SplashGUI was released and tested with; bumping it takes a new app build. Latest: before every start, check GitHub's newest Splash release and install it (checksum verified against the release's own .sha256); if GitHub can't be reached the installed engine stays. Custom: install the exact build named by the three fields below.")
+                .help("Pinned: always run the engine version this SplashGUI was released and tested with; bumping it takes a new app build. A Homebrew-installed engine at or above that version is used instead of downloading a copy. Homebrew: use the engine `brew install splash` put on this Mac, whatever version it is — `brew upgrade splash` updates it and no copy is downloaded. Latest: before every start, check GitHub's newest Splash release and install it (checksum verified against the release's own .sha256); if GitHub can't be reached the installed engine stays. Homebrew is not consulted here. Custom: install the exact build named by the three fields below.")
                 switch model.config.engineMode {
                 case .pinned:
                     Toggle("Check for engine update on start", isOn: $model.config.checkEngineUpdate)
                         .help("On: each start installs the engine this SplashGUI build pins if a different one is installed. Off: only download if no engine is installed yet.")
+                case .homebrew:
+                    Text("Uses the engine Homebrew installed at /opt/homebrew/opt/splash, whatever version it is; `brew upgrade splash` updates it. No download. If Homebrew's copy is missing, the pinned engine is used.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 case .latest:
-                    Text("Checks GitHub on every start; a newer release downloads before the server launches. Unreachable GitHub keeps the installed engine.")
+                    Text("Checks GitHub on every start; a newer release downloads before the server launches. Unreachable GitHub keeps the installed engine. Homebrew installs are not consulted.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 case .custom:
@@ -57,7 +63,7 @@ struct RunTab: View {
                 HStack {
                     Text("Installed engine")
                     Spacer()
-                    Text(model.engineVersion ?? "not installed")
+                    Text(installedEngineText)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
@@ -231,16 +237,16 @@ struct RunTab: View {
 
     private func catalogStatusRow(_ entry: CatalogModel) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: entry.onDisk ? "checkmark.circle.fill" : "arrow.down.circle")
                     .foregroundStyle(entry.onDisk ? Color.green : Color.orange)
-                Text(entry.onDisk
-                     ? "installed, maps from disk"
-                     : "not installed, first start pulls it from Hugging Face")
+                // One Text, not two: separate Texts wrap independently, so on a narrow window
+                // the note dropped to its own line instead of flowing after the status.
+                Text("\(entry.onDisk ? "installed, maps from disk" : "not installed, first start pulls it from Hugging Face") · \(entry.note)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("· \(entry.note)").font(.caption).foregroundStyle(.secondary)
-                Spacer()
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
             }
             .help((entry.downloadURL.map { "pulls, pinned to commit \($0). " } ?? "")
                   + "serve --revision pins the download to this exact commit, so a later re-upload under the same file name cannot change what loads. The catalog also carries its sha256; the app checks it against the digest Splash records before starting.")
@@ -358,6 +364,11 @@ struct RunTab: View {
             Toggle("Serve offline (skip Hub check)", isOn: $model.config.run.offline)
                 .help("Start without contacting Hugging Face: the model loads straight from the local cache. Use it on a plane or when the Hub is unreachable; a model that has never been downloaded cannot start this way. Restart to apply.")
         }
+    }
+
+    private var installedEngineText: String {
+        let version = model.engineVersion ?? "not installed"
+        return EngineInstaller.currentIsExternal ? "\(version) · Homebrew" : version
     }
 
     private func openWebChat() {

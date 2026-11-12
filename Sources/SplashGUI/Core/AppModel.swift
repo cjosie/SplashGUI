@@ -12,7 +12,11 @@ enum ServerPhase: Equatable {
 @MainActor
 final class AppModel: ObservableObject {
     @Published var config: AppConfig {
-        didSet { ConfigStore.shared.save(config) }
+        didSet {
+            ConfigStore.shared.save(config)
+            // The Logging tab's LAN toggle is live: the proxy reads its policy per request.
+            proxy?.updatePolicy(.init(logLocal: true, logLAN: config.loggingLanClients))
+        }
     }
     @Published var phase: ServerPhase = .stopped
     @Published var logTail: [String] = []
@@ -29,6 +33,9 @@ final class AppModel: ObservableObject {
     @Published var engineProgress: Double = 0
     @Published var engineVersion: String?
     @Published var engineResolvedVersion: String?
+    // The Homebrew-casked engine's version, if one is installed. Read on demand: `brew
+    // upgrade`/`uninstall` can change it while the app runs, and the picker should follow.
+    var homebrewEngineVersion: String? { EngineInstaller.externalEngineVersion() }
     private var engineCancels: Set<AnyCancellable> = []
     // Depth of the 27B arch every catalog model shares; used only to scale the load-progress bar.
     private static let modelLayerCount = 66.0
@@ -200,10 +207,12 @@ final class AppModel: ObservableObject {
     }
     private var client: SplashClient { SplashClient(port: frontedEnginePort ?? config.run.port) }
     private var pollTask: Task<Void, Never>?
+    private var pollTick = 0
     private var logTimer: Timer?
     // Session logging (spec-logging-proxy). When the serve is fronted, the proxy holds the
     // PUBLIC port and the engine runs on `frontedEnginePort`; status polling goes direct.
     let sessionLog = SessionLog()
+    let performanceLog = PerformanceLog()
     @Published var frontedEnginePort: Int?
     private var proxy: SessionProxy?
     // The Logging tab's "applies on next Start" hint: what the running serve was started with.
@@ -266,6 +275,7 @@ final class AppModel: ObservableObject {
         refreshModelSizeCache()
         // Retention sweep on launch; day-file names older than the window are deleted.
         SessionLog.purge(dir: sessionLog.dir, retentionDays: config.loggingRetentionDays)
+        SessionLog.purge(dir: performanceLog.dir, retentionDays: config.loggingRetentionDays)
 
         engineVersion = engine.installedVersion
         engine.step = EngineInstaller.isInstalled ? .ready : .idle
@@ -480,20 +490,35 @@ final class AppModel: ObservableObject {
         return Int(t)
     }
 
-    func clientConfigText(for client: ProviderClient) -> String {
+    func clientConfigText(for client: ProviderClient, useLAN: Bool = false) -> String {
         let (tokens, _) = providerContextTokens
         let modalities = phase == .ready
             ? status?.inputModalities ?? (config.run.languageOnly ? ["text"] : ["text", "image", "pdf"])
             : (config.run.languageOnly ? ["text"] : ["text", "image", "pdf"])
+        // LAN configs are for another machine on this network; without a leased address (or
+        // with LAN serving off) they fall back to loopback rather than write a broken URL.
+        let host = useLAN && config.run.lanAccess
+            ? (MachineInfo.lanIPv4Address ?? "127.0.0.1") : "127.0.0.1"
         // The served name, when set, is the name clients should use: the API answers to it and,
         // with announce, reports it. The full Hub ID stays the profile key and the /status name.
         let apiName = config.run.servedModelName.isEmpty ? config.run.modelID : config.run.servedModelName
+        let off: SamplingDefaults? = catalogEntry.map { e in
+            var s = SamplingDefaults()
+            s.temperature = e.cardOffTemperature
+            s.topP = e.cardOffTopP
+            s.topK = e.cardOffTopK
+            s.presencePenalty = e.cardOffPresencePenalty
+            s.minP = e.cardOffMinP
+            return s
+        }
         let ctx = ClientConfigContext(client: client, modelID: apiName,
                                       label: catalogEntry?.label ?? savedEntry?.label ?? config.run.modelID,
-                                      port: config.run.port, contextTokens: tokens,
+                                      host: host, port: config.run.port, contextTokens: tokens,
                                       inputModalities: modalities,
                                       sampling: config.sampling,
-                                      efforts: catalogEntry?.supportedEfforts ?? CatalogModel.allEfforts)
+                                      offSampling: off,
+                                      efforts: catalogEntry?.supportedEfforts ?? CatalogModel.allEfforts,
+                                      laterSystem: status?.rendersLaterSystem ?? false)
         return ClientConfigs.text(for: ctx)
     }
 
@@ -588,9 +613,10 @@ final class AppModel: ObservableObject {
     // fields, and .latest keeps the installed engine on a failed check — the compiled-in pin
     // would silently DOWNGRADE — while nothing-installed falls back to the compiled pin.
     // `externalVersion` (Homebrew, if present) satisfies .pinned/.latest without a download
-    // when it is at or above the wanted build; .custom names an explicit payload and never
-    // accepts a stand-in. When external is true, start() adopts it (points `current` at the
-    // brew libexec) instead of calling ensureInstalled.
+    // when it is at or above the wanted build; .homebrew takes it at ANY version (that is the
+    // point: brew can lag the pin) and falls back to pinned behavior when brew is absent.
+    // .custom names an explicit payload and never accepts a stand-in. When external is true,
+    // start() adopts it (points `current` at the brew libexec) instead of calling ensureInstalled.
     nonisolated static func enginePlan(mode: EngineMode, customOverride: EnginePin?, installed: Bool,
                                        checkUpdate: Bool, latest: EnginePin?,
                                        pinnedVersion: String, externalVersion: String?)
@@ -598,7 +624,7 @@ final class AppModel: ObservableObject {
         var ensure = !installed || checkUpdate
         var override: EnginePin?
         switch mode {
-        case .pinned:
+        case .pinned, .homebrew:
             break
         case .custom:
             override = customOverride
@@ -612,7 +638,9 @@ final class AppModel: ObservableObject {
             }
         }
         var external = false
-        if mode != .custom, let ext = externalVersion {
+        if mode == .homebrew {
+            external = externalVersion != nil
+        } else if mode != .custom, let ext = externalVersion {
             let wanted = override?.version ?? pinnedVersion
             if EngineInstaller.versionOrder(ext, wanted) != .orderedAscending { external = true }
         }
@@ -660,6 +688,9 @@ final class AppModel: ObservableObject {
             if !ensure, !external, case .latest = self.config.engineMode {
                 self.server.note("- engine update check: GitHub unreachable, keeping the installed engine")
             }
+            if !external, case .homebrew = self.config.engineMode {
+                self.server.note("- engine: no Homebrew install found; using the pinned engine")
+            }
             if external {
                 // Skip the download: point `current` at the Homebrew payload.
                 do {
@@ -694,8 +725,14 @@ final class AppModel: ObservableObject {
                     ? SessionProxy.pickInternalPort(publicPort: self.config.run.port) : nil
                 let plan = Self.frontingPlan(enabled: self.config.loggingEnabled,
                                              adopted: false, pickedInternalPort: picked)
+                // The engine's Host allow-list is its bind address plus loopback; a LAN client
+                // reaches this Mac by its LAN address, so name that address explicitly.
+                let lanHosts = self.config.run.lanAccess
+                    ? [MachineInfo.lanIPv4Address].compactMap { $0 } : []
                 if plan.front, let internalPort = plan.enginePort {
                     run.port = internalPort
+                    // The proxy is the only LAN-facing listener; keep the engine on loopback.
+                    run.lanAccess = false
                 } else if self.config.loggingEnabled, picked == nil {
                     self.server.note("- session logging: no free internal port near \(self.config.run.port); serving directly")
                 }
@@ -703,7 +740,8 @@ final class AppModel: ObservableObject {
                                        revision: self.catalogEntry?.revision,
                                        local: local.map {
                                            SplashServer.LocalLaunch(modelDir: $0.path, mmproj: $0.mmproj)
-                                       })
+                                       },
+                                       allowedHosts: lanHosts)
                 if plan.front, let internalPort = plan.enginePort {
                     let px = try SessionProxy(
                         publicPort: self.config.run.port, internalPort: internalPort,
@@ -791,6 +829,7 @@ final class AppModel: ObservableObject {
 
     private func startPolling() {
         pollTask?.cancel()
+        pollTick = 0
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -841,8 +880,39 @@ final class AppModel: ObservableObject {
                         stage: stage
                     )
                     self.history.append(sample)
-                    if self.history.count > 240 { self.history.removeFirst(self.history.count - 240) }
+                    if self.history.count > 480 { self.history.removeFirst(self.history.count - 480) }
                     self.currentStage = stage
+                    // Performance logging rides this poll: the same /status data the Status
+                    // tab shows, written every Nth tick. No extra requests to the engine.
+                    self.pollTick += 1
+                    if self.config.performanceLoggingEnabled, stage != nil,
+                       PerformanceLog.shouldSample(tick: self.pollTick,
+                                                   interval: self.config.performanceLogInterval) {
+                        self.performanceLog.write(PerformanceSample(
+                            ts: sample.time,
+                            model: self.effectiveModel ?? self.config.run.modelID,
+                            engine: self.engineVersion,
+                            stage: stage.map { $0 == .prefill ? "prefill" : "decode" },
+                            ttftP50: snap?.ttftP50,
+                            ttftP95: snap?.ttftP95,
+                            itlP50: snap?.itlP50,
+                            itlP95: snap?.itlP95,
+                            decodeTps: decodeTps,
+                            prefillTps: prefillTps,
+                            draftAcceptance: draft,
+                            cacheHitRate: snap?.cacheHitRate,
+                            reusedTokens: snap?.reusedTokens,
+                            cacheLookups: snap?.cacheLookups,
+                            queued: snap?.queued,
+                            prefilling: snap?.prefilling,
+                            decoding: snap?.decoding,
+                            kvPagesActive: snap?.kvPagesActive,
+                            kvBlockTokens: snap?.kvBlockTokens,
+                            hardBudgetBytes: snap?.hardBudgetBytes,
+                            contextTokens: snap?.maxContextTokens,
+                            physicalRAM: MachineInfo.physicalRAM,
+                            metalMaxWorkingSet: MachineInfo.metalMaxWorkingSet))
+                    }
                 } else if self.phase == .starting {
                     let alive = self.adoptedPID.map { kill(Int32($0), 0) == 0 } ?? self.server.isRunning
                     if !alive {
@@ -855,7 +925,7 @@ final class AppModel: ObservableObject {
                     let snap = await self.client.fetchStatus()
                     self.status = snap
                 }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }

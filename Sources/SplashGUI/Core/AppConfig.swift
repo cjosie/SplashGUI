@@ -396,6 +396,10 @@ struct AppConfig: Codable, Equatable {
     var loggingEnabled: Bool = false
     var loggingLanClients: Bool = false
     var loggingRetentionDays: Int = 90
+    // Performance samples ride the existing /status poll (no extra requests). The interval is
+    // in seconds and the poll ticks once a second; 1/5/10 are the offered choices.
+    var performanceLoggingEnabled: Bool = false
+    var performanceLogInterval: Int = 5
 
     init() {}
 
@@ -408,6 +412,7 @@ struct AppConfig: Codable, Equatable {
         case engineMode
         case startOnLaunch
         case loggingEnabled, loggingLanClients, loggingRetentionDays
+        case performanceLoggingEnabled, performanceLogInterval
     }
 
     init(from decoder: Decoder) throws {
@@ -429,6 +434,8 @@ struct AppConfig: Codable, Equatable {
         loggingEnabled = try c.decodeIfPresent(Bool.self, forKey: .loggingEnabled) ?? false
         loggingLanClients = try c.decodeIfPresent(Bool.self, forKey: .loggingLanClients) ?? false
         loggingRetentionDays = try c.decodeIfPresent(Int.self, forKey: .loggingRetentionDays) ?? 90
+        performanceLoggingEnabled = try c.decodeIfPresent(Bool.self, forKey: .performanceLoggingEnabled) ?? false
+        performanceLogInterval = try c.decodeIfPresent(Int.self, forKey: .performanceLogInterval) ?? 5
     }
 
     func enginePinOverride() -> EnginePin? {
@@ -695,6 +702,15 @@ final class ConfigStore {
                     cfg.run.kvFormat = p?.kvFormat ?? "bf16"
                 }
                 cfg.run.schemaVersion = 6
+            }
+            if (cfg.run.schemaVersion ?? 1) < 7 {
+                // Prefer a Homebrew-installed engine when one is present: it updates with
+                // `brew upgrade splash` and needs no duplicate download. Only the untouched
+                // default (.pinned) flips; an explicit .latest/.custom choice stays.
+                if cfg.engineMode == .pinned, EngineInstaller.externalEngineVersion() != nil {
+                    cfg.engineMode = .homebrew
+                }
+                cfg.run.schemaVersion = 7
             }
             return cfg
         }

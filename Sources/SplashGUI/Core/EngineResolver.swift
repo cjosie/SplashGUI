@@ -3,6 +3,7 @@ import Foundation
 // How the app decides which engine build to run.
 enum EngineMode: String, Codable, Equatable {
     case pinned   // the build this SplashGUI shipped with (EngineInstaller.defaultPin)
+    case homebrew // the engine Homebrew installed, whatever version it is; no download
     case latest   // newest GitHub release, checked on every start; falls back below
     case custom   // the three override fields (AppConfig.enginePinOverride)
 }

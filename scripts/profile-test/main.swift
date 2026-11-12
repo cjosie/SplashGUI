@@ -21,7 +21,11 @@ func runTests() {
     check("old config decodes — typed values survived",
           cfg.run.maxContext == "100K" && cfg.sampling.temperature == 0.23,
           "\(cfg.run.maxContext) / \(cfg.sampling.temperature)")
-    check("schemaVersion migrated to 6", cfg.run.schemaVersion == 6, "\(cfg.run.schemaVersion ?? -1)")
+    check("schemaVersion migrated to 7", cfg.run.schemaVersion == 7, "\(cfg.run.schemaVersion ?? -1)")
+    let brew = EngineInstaller.externalEngineVersion()
+    check("schema 7 prefers a Homebrew engine when one is installed",
+          brew == nil ? cfg.engineMode == .pinned : cfg.engineMode == .homebrew,
+          "\(cfg.engineMode) brew \(brew ?? "none")")
     // v2 flipped int8→bf16, v3 flipped bf16→auto; v6 then resolved the still-auto KV because
     // the typed maxContext keeps Auto off. The endpoint that matters: a concrete KV pick.
     check("typed serve fields migrate to Auto off", cfg.run.auto == false)
@@ -118,7 +122,7 @@ func runTests() {
           "\(reread.modelProfiles[B]?.sampling.temperature ?? -1)")
     check("typed temp 0.55 survives a save", reread.sampling.temperature == 0.55,
           "\(reread.sampling.temperature)")
-    check("schemaVersion stays 6", reread.run.schemaVersion == 6)
+    check("schemaVersion stays 7", reread.run.schemaVersion == 7)
     // startOnLaunch is absent from this v2 fixture — the tolerant decoder must default it
     // false, not throw the whole config back to factory (the Codable missing-key trap).
     check("startOnLaunch defaults false when the key is absent", reread.startOnLaunch == false)
@@ -156,6 +160,13 @@ func runTests() {
     check("LAN on: --host 0.0.0.0 reaches the engine",
           lanArgs.firstIndex(of: "--host").map { $0 + 1 < lanArgs.count && lanArgs[$0 + 1] == "0.0.0.0" } == true,
           lanArgs.joined(separator: " "))
+    let lanHostArgs = SplashServer.buildArguments(for: lan, allowedHosts: ["10.0.0.221"])
+    check("LAN on: --allowed-host carries the LAN address",
+          lanHostArgs.firstIndex(of: "--allowed-host").map {
+              $0 + 1 < lanHostArgs.count && lanHostArgs[$0 + 1] == "10.0.0.221"
+          } == true, lanHostArgs.joined(separator: " "))
+    check("no --allowed-host when none is passed",
+          !SplashServer.buildArguments(for: lan).contains("--allowed-host"))
     let noLan = #"{"run":{"port":8123,"modelID":"someone/Model:x"}}"#
     if let nd = noLan.data(using: .utf8),
        let ncfg = try? JSONDecoder().decode(AppConfig.self, from: nd) {
@@ -329,7 +340,7 @@ func runTests() {
             check("all-auto schema 5 migrates to Auto on", migrated.run.auto == true)
             check("all-auto migration leaves KV at auto",
                   migrated.run.kvFormat == "auto", migrated.run.kvFormat)
-            check("all-auto migration lands on schema 6", migrated.run.schemaVersion == 6)
+            check("all-auto migration lands on schema 7", migrated.run.schemaVersion == 7)
         } else {
             check("all-auto schema 5 migrates to Auto on", false, "fixture write failed")
         }
@@ -424,6 +435,65 @@ func runTests() {
           xtext.contains("wire_api = \"responses\"") && xtext.contains("env_key = \"SPLASH_API_KEY\"")
             && xtext.contains("model_auto_compact_token_limit = 58982")
             && xtext.contains("model_provider = \"splash\""))
+    var offSam = SamplingDefaults()
+    offSam.temperature = 0.7; offSam.topP = 0.8; offSam.topK = 20
+    offSam.presencePenalty = 1.5; offSam.minP = 0.05
+    let pctx = ClientConfigContext(client: .pi, modelID: base.modelID, label: base.label,
+                                   port: base.port, contextTokens: base.contextTokens,
+                                   inputModalities: base.inputModalities, sampling: base.sampling,
+                                   offSampling: offSam, laterSystem: true)
+    if let data = ClientConfigs.text(for: pctx).data(using: .utf8),
+       let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let provider = (root["providers"] as? [String: Any])?["splash"] as? [String: Any],
+       let models = provider["models"] as? [[String: Any]],
+       let model = models.first {
+        let sp = model["samplingParams"] as? [String: Any]
+        let byLevel = model["samplingParamsByThinkingLevel"] as? [String: Any]
+        let off = byLevel?["off"] as? [String: Any]
+        check("Pi: provider shape matches splash pi",
+              (provider["baseUrl"] as? String) == "http://127.0.0.1:8095/v1"
+                && (provider["api"] as? String) == "openai-completions"
+                && (provider["apiKey"] as? String) == "local"
+                && (model["id"] as? String) == "someone/Model:x"
+                && (model["reasoning"] as? Bool) == true
+                && (model["contextWindow"] as? Int) == 65_536
+                && (model["maxTokens"] as? Int) == 32_768
+                && (model["input"] as? [String]) == ["text", "image"]
+                && ((model["thinkingLevelMap"] as? [String: Any])?["off"] as? String) == "none"
+                && ((model["compat"] as? [String: Any])?["supportsMidConvoSystemMessages"] as? Bool) == true)
+        check("Pi: samplingParams carry the model's sampling",
+              (sp?["temperature"] as? Double) == 1.0 && (sp?["top_p"] as? Double) == 0.95
+                && (sp?["top_k"] as? Int) == 20 && (sp?["presence_penalty"] as? Double) == 0
+                && (sp?["min_p"] as? Double) == 0 && (sp?["seed"] as? UInt64) == 12_345_678_901)
+        check("Pi: thinking-off set rides samplingParamsByThinkingLevel.off",
+              (off?["temperature"] as? Double) == 0.7 && (off?["top_p"] as? Double) == 0.8
+                && (off?["top_k"] as? Int) == 20 && (off?["presence_penalty"] as? Double) == 1.5
+                && (off?["min_p"] as? Double) == 0.05)
+    } else {
+        check("Pi: provider shape matches splash pi", false, "config did not parse")
+    }
+    let pOff = ClientConfigContext(client: .pi, modelID: base.modelID, label: base.label,
+                                   port: 9000, contextTokens: base.contextTokens,
+                                   inputModalities: ["text"], sampling: base.sampling)
+    let pOffText = ClientConfigs.text(for: pOff)
+    check("Pi: off-default port names the provider splash-<port>, text-only, no compat",
+          pOffText.contains("\"splash-9000\"") && pOffText.contains("\"text\"")
+            && !pOffText.contains("image")
+            && !pOffText.contains("supportsMidConvoSystemMessages")
+            && !pOffText.contains("samplingParamsByThinkingLevel"))
+    // The Provider tab's LAN toggle swaps the loopback host for this Mac's LAN address in
+    // every client's endpoint (the API has no key; the caption warns about that).
+    var lanBase = base
+    lanBase.host = "10.0.0.221"
+    let lanClaude = ClientConfigContext(client: .claudeCode, modelID: base.modelID,
+                                        label: base.label, host: "10.0.0.221", port: base.port,
+                                        contextTokens: base.contextTokens,
+                                        inputModalities: base.inputModalities,
+                                        sampling: base.sampling)
+    check("LAN host reaches every client endpoint",
+          ClientConfigs.text(for: lanBase).contains("http://10.0.0.221:8095/v1")
+            && ClientConfigs.text(for: lanClaude).contains("http://10.0.0.221:8095\"")
+            && !ClientConfigs.text(for: lanClaude).contains("127.0.0.1"))
 
     // The served name, when set, replaces the Hub ID in the configs the Provider tab writes.
     let priorID = m.config.run.modelID
@@ -583,6 +653,18 @@ func runTests() {
                                         checkUpdate: false, latest: nil, pinnedVersion: PIN, externalVersion: "9.9.9")
     check("custom mode never substitutes the brew engine",
           !extCustom.external && extCustom.ensure == true && extCustom.override == stale)
+    let brewMode = AppModel.enginePlan(mode: .homebrew, customOverride: nil, installed: true,
+                                       checkUpdate: true, latest: nil, pinnedVersion: PIN, externalVersion: "1.5.0")
+    check("homebrew mode takes a brew engine older than the pin, no download",
+          brewMode.external && brewMode.ensure == false)
+    let brewMissing = AppModel.enginePlan(mode: .homebrew, customOverride: nil, installed: true,
+                                          checkUpdate: false, latest: nil, pinnedVersion: PIN, externalVersion: nil)
+    check("homebrew mode without brew keeps the installed engine",
+          !brewMissing.external && brewMissing.ensure == false)
+    let brewMissingFresh = AppModel.enginePlan(mode: .homebrew, customOverride: nil, installed: false,
+                                               checkUpdate: false, latest: nil, pinnedVersion: PIN, externalVersion: nil)
+    check("homebrew mode without brew and nothing installed installs the pin",
+          !brewMissingFresh.external && brewMissingFresh.ensure == true)
 
     // Dotted version compare: numeric segments, not lexicographic.
     check("versionOrder is numeric per segment",
@@ -833,6 +915,7 @@ func runTests() {
 
     checkLoggingParses()
     checkLoggingStore()
+    checkPerformanceLog()
     checkLoggingPlanning()
     checkLoggingE2E()
 
@@ -1031,6 +1114,45 @@ func checkLoggingStore() {
     try? FileManager.default.removeItem(at: tmp)
 }
 
+func checkPerformanceLog() {
+    let tmp = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("splash-perf-\(UUID().uuidString)", isDirectory: true)
+    var s = PerformanceSample(ts: Date())
+    s.model = "someone/Model:x"; s.engine = "1.6.1"; s.stage = "decode"
+    s.ttftP50 = 120; s.ttftP95 = 300; s.itlP50 = 18; s.itlP95 = 40
+    s.decodeTps = 42.5; s.prefillTps = 900; s.draftAcceptance = 0.72
+    s.cacheHitRate = 0.5; s.reusedTokens = 1234; s.cacheLookups = 9
+    s.queued = 0; s.prefilling = 0; s.decoding = 1
+    s.kvPagesActive = 12; s.kvBlockTokens = 256; s.hardBudgetBytes = 40_000_000_000
+    s.contextTokens = 65_536; s.physicalRAM = 64_000_000_000
+    s.metalMaxWorkingSet = 48_000_000_000
+    let line = PerformanceLog.encodeLine(s)
+    check("performance sample round-trips through JSONL",
+          line != nil && PerformanceLog.decodeLine(line!)?.decodeTps == 42.5
+            && PerformanceLog.decodeLine(line!)?.stage == "decode")
+    check("performance sampling follows the tick interval",
+          PerformanceLog.shouldSample(tick: 1, interval: 1)
+            && !PerformanceLog.shouldSample(tick: 4, interval: 5)
+            && PerformanceLog.shouldSample(tick: 5, interval: 5)
+            && PerformanceLog.shouldSample(tick: 10, interval: 10)
+            && PerformanceLog.shouldSample(tick: 3, interval: 0))
+    let log = PerformanceLog(dir: tmp)
+    log.write(s)
+    var idle = PerformanceSample(ts: Date().addingTimeInterval(1))
+    idle.model = "someone/Model:x"; idle.stage = nil
+    log.write(idle)
+    check("performance day file lands and stats count it",
+          lgWaitUntil(4) { PerformanceLog.stats(dir: tmp).samplesToday == 2 }
+            && PerformanceLog.stats(dir: tmp).fileCount == 1)
+    let csv = PerformanceLog.csv(dir: tmp)
+    let rows = csv.split(separator: "\n")
+    check("performance CSV has a stable header and one row per sample",
+          rows.count == 3 && rows[0].hasPrefix("timestamp,model,engine,stage")
+            && rows[1].contains("42.5") && rows[1].contains("decode")
+            && rows[2].contains("someone/Model:x"))
+    try? FileManager.default.removeItem(at: tmp)
+}
+
 func checkLoggingPlanning() {
     let p = AppModel.frontingPlan(enabled: true, adopted: false, pickedInternalPort: 8199)
     check("fronting only when enabled, app-launched and a port was picked",
@@ -1043,6 +1165,11 @@ func checkLoggingPlanning() {
           SessionProxy.shouldRecord(policy: pol, loopbackPeer: true)
             && !SessionProxy.shouldRecord(policy: pol, loopbackPeer: false)
             && SessionProxy.shouldRecord(policy: .init(logLocal: true, logLAN: true), loopbackPeer: false))
+    check("loopback peer detection covers IPv4, IPv6 and localhost",
+          SessionProxy.isLoopbackEndpoint(.hostPort(host: "127.0.0.1", port: 1))
+            && SessionProxy.isLoopbackEndpoint(.hostPort(host: "::1", port: 1))
+            && SessionProxy.isLoopbackEndpoint(.hostPort(host: "localhost", port: 1))
+            && !SessionProxy.isLoopbackEndpoint(.hostPort(host: "10.0.0.5", port: 1)))
 
     let occupied = (41000 + Int.random(in: 0..<9000))
     if SessionProxy.isPortFree(occupied) {

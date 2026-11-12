@@ -128,7 +128,7 @@ struct ServerToolbarControls: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(snap.contextUsedTokens ?? 0)/\(max / 1024)K")
+                    Text("\(String(snap.contextUsedTokens ?? 0))/\(String(max / 1024))K")
                         .font(.caption)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)

@@ -112,7 +112,8 @@ final class SplashServer {
         return nil
     }
 
-    func launch(config: RunConfig, revision: String?, local: LocalLaunch? = nil) throws {
+    func launch(config: RunConfig, revision: String?, local: LocalLaunch? = nil,
+                allowedHosts: [String] = []) throws {
         guard process == nil else { return }
         guard let target = Self.resolveLaunch() else {
             throw ServerError.missingExecutable
@@ -120,7 +121,8 @@ final class SplashServer {
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: target.executable)
-        p.arguments = target.prefixArgs + Self.buildArguments(for: config, revision: revision, local: local)
+        p.arguments = target.prefixArgs + Self.buildArguments(for: config, revision: revision,
+                                                              local: local, allowedHosts: allowedHosts)
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
         env["TERM"] = "dumb"
@@ -195,7 +197,7 @@ final class SplashServer {
     }
 
     static func buildArguments(for config: RunConfig, revision: String? = nil,
-                               local: LocalLaunch? = nil) -> [String] {
+                               local: LocalLaunch? = nil, allowedHosts: [String] = []) -> [String] {
         var args = ["serve", "--model", config.modelID, "--port", String(config.port)]
         if let local {
             // Local serving: --model stays the ID the API reports, --model-dir names the files.
@@ -204,9 +206,13 @@ final class SplashServer {
             args += ["--model-dir", local.modelDir]
             if !local.mmproj.isEmpty && !config.languageOnly { args += ["--mmproj", local.mmproj] }
         }
-        // LAN serving: bind every IPv4 interface. The engine accepts IP-address Host headers
-        // by default, so no --allowed-host is needed for clients connecting by address.
+        // LAN serving: bind every IPv4 interface. The engine's Host allow-list is the bind
+        // address plus loopback, and 0.0.0.0 is excluded — so a client reaching this Mac by
+        // its LAN address needs that address named with --allowed-host (1.6.x refuses it
+        // otherwise). Behind the logging proxy the engine binds loopback and the proxy is the
+        // only LAN-facing listener; the allowed host still has to be passed through.
         if config.lanAccess { args += ["--host", "0.0.0.0"] }
+        for host in allowedHosts where !host.isEmpty { args += ["--allowed-host", host] }
         // A catalog entry pins an exact HF commit, so the pull is reproducible and a later
         // re-upload under the same name cannot change what this Mac loads. The engine refuses
         // --revision with --model-dir, so a local launch never carries one.

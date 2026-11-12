@@ -37,6 +37,7 @@ c['run']['modelID'] = 'unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS'
 c['run']['maxCacheDisk'] = '0'
 c['run'].pop('idleRelease', None)
 c['run'].pop('persistentCache', None)
+c['engineMode'] = 'pinned'   # the schema-7 migration flips this when Homebrew is present
 c['startOnLaunch'] = False   # live config may have it on; the fixture must stay inert
 c['sampling']['temperature'] = 0.23
 c.pop('modelProfiles', None)
@@ -47,6 +48,6 @@ swiftc -swift-version 5 -o /tmp/splashgui-profiletest \
   "$CORE"/AppConfig.swift "$CORE"/AppModel.swift "$CORE"/ClientConfigs.swift \
   "$CORE"/EngineInstaller.swift "$CORE"/EngineResolver.swift \
   "$CORE"/MachineInfo.swift "$CORE"/SessionLog.swift "$CORE"/SessionProxy.swift \
-  "$CORE"/SplashClient.swift "$CORE"/SplashServer.swift main.swift
+  "$CORE"/PerformanceLog.swift "$CORE"/SplashClient.swift "$CORE"/SplashServer.swift main.swift
 
 /tmp/splashgui-profiletest

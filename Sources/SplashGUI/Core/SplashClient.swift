@@ -55,6 +55,20 @@ struct StatusSnapshot {
     var kvBlockTokens: Int? { int("kv", "block_tokens") }
     // What the running server accepts: ["text"] or ["text","image","pdf"].
     var inputModalities: [String]? { self[["input_modalities"]] as? [String] }
+    // Whether every chat template renders a later system message in place. The engine's Pi
+    // connector advertises this as compat.supportsMidConvoSystemMessages; /status reports
+    // "native"/"patched" per template (or one string when there is a single template).
+    var rendersLaterSystem: Bool? {
+        guard let t = self[["chat_template", "later_system"]] else { return nil }
+        if let s = t as? String { return s == "native" || s == "patched" }
+        if let d = t as? [String: Any] {
+            return !d.isEmpty && d.values.allSatisfy {
+                guard let s = $0 as? String else { return false }
+                return s == "native" || s == "patched"
+            }
+        }
+        return nil
+    }
 
     // Live fraction of the granted context window occupied by active requests' KV:
     // resident tokens (active pages x tokens-per-page) over the ceiling. Server-wide, so it

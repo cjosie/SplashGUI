@@ -6,6 +6,7 @@ import AppKit
 struct ProviderTab: View {
     @EnvironmentObject var model: AppModel
     @State private var client: ProviderClient = .opencode
+    @State private var useLAN = false
 
     var body: some View {
         SettingsPage {
@@ -21,6 +22,25 @@ struct ProviderTab: View {
                     .fixedSize()
                     .help(client.tooltip)
                     Spacer()
+                }
+                Toggle("Use LAN IP for other machines", isOn: $useLAN)
+                    .disabled(!lanConfigAvailable)
+                    .help("Write the configs with this Mac's LAN address instead of 127.0.0.1, so another machine on the same network can point at this server. Needs Serve on LAN on the Run tab. The API has no key, so only use it on a trusted network.")
+                if !model.config.run.lanAccess {
+                    Text("Serve on LAN is off (Run tab); these configs only work on this Mac.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if let ip = MachineInfo.lanIPv4Address {
+                    // verbatim: a LocalizedStringKey Text would group the port as "8,095".
+                    Text(verbatim: useLAN
+                         ? "Configs point at http://\(ip):\(model.config.run.port). Keep this Mac on the same network."
+                         : "Configs point at http://127.0.0.1:\(model.config.run.port) (this Mac). Turn the toggle on for another machine.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("No LAN address is leased right now; configs keep 127.0.0.1.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -88,7 +108,7 @@ struct ProviderTab: View {
                     .opacity(client.carries(.seed) ? 1 : 0.4)
                 Spacer()
             }
-            .help("Fixed seed reproduces outputs, reliably only when the request runs alone with identical cached prefixes; concurrency changes batching and can change results. Written into the OpenCode config's model options.")
+            .help("Fixed seed reproduces outputs, reliably only when the request runs alone with identical cached prefixes; concurrency changes batching and can change results. Written into the OpenCode config's model options and Pi's samplingParams.")
             if let off = cardOffLinkLabel {
                 HStack(spacing: 6) {
                     Button(off) { model.applyCardOffSampling() }
@@ -121,7 +141,7 @@ struct ProviderTab: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             ScrollView {
-                Text(model.clientConfigText(for: client))
+                Text(model.clientConfigText(for: client, useLAN: useLAN))
                     .font(.system(size: 11, design: .monospaced))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -137,7 +157,7 @@ struct ProviderTab: View {
             HStack(spacing: 10) {
                 Button("Copy") {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(model.clientConfigText(for: client),
+                    NSPasteboard.general.setString(model.clientConfigText(for: client, useLAN: useLAN),
                                                    forType: .string)
                 }
                 Button("Save…") { saveConfig() }
@@ -167,7 +187,17 @@ struct ProviderTab: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if client == .pi {
+                Text("Merge the providers block into ~/.pi/agent/models.json. `splash pi` writes the same entry and launches Pi with --provider splash. Sampling rides in samplingParams; the card's thinking-off set rides in samplingParamsByThinkingLevel.off.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+
+    private var lanConfigAvailable: Bool {
+        model.config.run.lanAccess && MachineInfo.lanIPv4Address != nil
     }
 
     private var configCaption: String {
@@ -213,7 +243,7 @@ struct ProviderTab: View {
         panel.allowedContentTypes = client == .codex ? [.plainText] : [.json]
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            try? model.clientConfigText(for: client).write(to: url, atomically: true, encoding: .utf8)
+            try? model.clientConfigText(for: client, useLAN: useLAN).write(to: url, atomically: true, encoding: .utf8)
         }
     }
 }
