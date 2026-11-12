@@ -32,6 +32,11 @@ c['run']['maxContext'] = '100K'
 # Pin the starting model: the assertions below assume the current model is A (IQ3_XXS),
 # so the fixture must not inherit whatever model the live config happens to select.
 c['run']['modelID'] = 'unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS'
+# Pin the pre-v5/v6 state the migration assertions read back: a live config may already carry
+# a post-migration value (or a legacy one), which would make those checks machine-dependent.
+c['run']['maxCacheDisk'] = '0'
+c['run'].pop('idleRelease', None)
+c['run'].pop('persistentCache', None)
 c['startOnLaunch'] = False   # live config may have it on; the fixture must stay inert
 c['sampling']['temperature'] = 0.23
 c.pop('modelProfiles', None)
