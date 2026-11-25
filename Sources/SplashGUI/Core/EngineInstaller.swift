@@ -27,9 +27,9 @@ final class EngineInstaller: ObservableObject {
 
     // Bumping the engine is an app release; AppConfig's engine*Override fields are the escape hatch.
     static let defaultPin = EnginePin(
-        version: "1.6.1",
-        sha256: "0ed408a781f951a13ff58bed95c9e8c1d1dc67ab9d649fcaf365972b6720ce6c",
-        url: "https://github.com/incoai/splash/releases/download/1.6.1/splash-1.6.1-arm64-macos26.tar.gz"
+        version: "1.7.2",
+        sha256: "40a1e6d585ed8f51b2f2e17c331e7d9533a1b666e1e6e418ddd623bdd3a29e2b",
+        url: "https://github.com/incoai/splash/releases/download/1.7.2/splash-1.7.2-arm64-macos26.tar.gz"
     )
 
     static let fm = FileManager.default

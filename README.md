@@ -44,8 +44,13 @@ The picker ships Splash's own list. Download sizes are the engine's own figures 
 | Qwen3.8-27B Q4_K_M (GGUF) | 21 GB | 36 GB | Strongest at this size, slower |
 | Qwen3.8-27B MLX 4-bit | 20 GB | 36 GB | Strongest at this size, slower |
 | Qwen3.8-27B IQ3_XXS (GGUF) | 16 GB | 24 GB | Strongest at this size, slower |
+| Qwen3.8-Flash-Next IQ3_S (GGUF) | 86 GB | 96 GB | Most capable |
 | Qwen3.8-Flash-Next Q2_0 (GGUF) | 69 GB | 64 GB | Most capable |
+| Qwen3.8-Flash-Next MLX 4-bit | 113 GB | 96 GB | Most capable |
 | Flint Q4_K_XL (GGUF) | 26 GB | 48 GB | Text only |
+| Flint MLX 3-4bit | 18 GB | 36 GB | Text only |
+| Inkling-2-Mini Q4_K_M (GGUF) | 18 GB | 36 GB | Text only |
+| Inkling-2-Mini MLX 4-bit | 18 GB | 36 GB | Text only |
 | Ornith-1.5-122B Q4_K_XL (GGUF) | 82 GB | 128 GB | Largest model |
 | Ornith-1.5-122B MLX 4-bit | 71 GB | 128 GB | Largest model |
 | Ternary-Bonsai 2 27B PQ2_0 | 12 GB | 24 GB | Smallest download |

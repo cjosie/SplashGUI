@@ -565,7 +565,7 @@ struct CatalogModel: Identifiable, Equatable {
     }
 
     // The catalog IS Splash's own suggested list (install/suggested-models.tsv as shipped by
-    // engine 1.5.0): same order (best first), same facts. The note line carries the tsv's
+    // engine 1.7.2): same order (best first), same facts. The note line carries the tsv's
     // MEMORY / SIZE / ABOUT columns verbatim in meaning — SIZE is the vendor's download figure
     // including the vision projector and DFlash2 draft (the auto-profile's weight basis), and
     // MEMORY feeds fitsThisMac directly, so note and the too-large warning agree by
@@ -604,9 +604,22 @@ struct CatalogModel: Identifiable, Equatable {
                      note: "for 64 GB Macs · 69 GB download · Most capable",
                      approxBytes: 69_000_000_000, memoryGB: 64,
                      supportsPleMemory: true, supportsSparseKvMemory: true),
+        CatalogModel(id: "mlx-community/Qwen3.8-Flash-Next-4bit", label: "Qwen3.8-Flash-Next MLX 4-bit",
+                     note: "for 96 GB Macs · 113 GB download · Most capable",
+                     approxBytes: 113_000_000_000, memoryGB: 96,
+                     supportsPleMemory: true, supportsSparseKvMemory: true),
         CatalogModel(id: "unsloth/flint-GGUF:UD-Q4_K_XL", label: "Flint Q4_K_XL",
                      note: "for 48 GB Macs · 26 GB download · Text only",
                      approxBytes: 26_000_000_000, memoryGB: 48),
+        CatalogModel(id: "mlx-community/flint-mixed-3-4bit", label: "Flint MLX 3-4bit",
+                     note: "for 36 GB Macs · 18 GB download · Text only",
+                     approxBytes: 18_000_000_000, memoryGB: 36),
+        CatalogModel(id: "unsloth/Inkling-2-Mini-GGUF:UD-Q4_K_M", label: "Inkling-2-Mini Q4_K_M",
+                     note: "for 36 GB Macs · 18 GB download · Text only",
+                     approxBytes: 18_000_000_000, memoryGB: 36),
+        CatalogModel(id: "mlx-community/Inkling-2-Mini-4bit", label: "Inkling-2-Mini MLX 4-bit",
+                     note: "for 36 GB Macs · 18 GB download · Text only",
+                     approxBytes: 18_000_000_000, memoryGB: 36),
         CatalogModel(id: "unsloth/Ornith-1.5-122B-GGUF:UD-Q4_K_XL", label: "Ornith-1.5-122B Q4_K_XL",
                      note: "for 128 GB Macs · 82 GB download · Largest model",
                      approxBytes: 82_000_000_000, memoryGB: 128),
