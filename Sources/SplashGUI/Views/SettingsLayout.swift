@@ -1,4 +1,11 @@
 import SwiftUI
+import AppKit
+
+// One clipboard writer for every "copy the endpoint/config" control.
+func copyToClipboard(_ text: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
+}
 
 // macOS's grouped FormStyle centers its rows in a fixed ~704pt column, leaving large dead
 // margins on a wide window. These keep the grouped-form look (header + rounded card) while

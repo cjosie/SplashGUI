@@ -3,13 +3,9 @@ import Network
 
 // A loopback HTTP proxy that fronts the PUBLIC serve port while logging is on:
 //     clients ──► proxy :<public> ──► engine :<internal>
-// Forwarding is a dumb byte pipe and NEVER depends on the logging layer: the parsers
-// are a tee that consumes copies. Anything unparseable still flows; at worst the
-// record is flagged malformed. Only /v1/* is recorded; /status, the webui, etc.
-// proxy silently.
-//
-// The parse layer below the transport is pure and harness-tested (head parse, chunked
-// framing, SSE reassembly, OpenAI chat/responses shapes, request summary).
+// Forwarding is a dumb byte pipe and NEVER depends on the logging layer: the parsers are a tee
+// that consumes copies. Only /v1/* is recorded; /status, the webui, etc. proxy silently.
+// The parse layer below the transport is pure and harness-tested.
 nonisolated enum HTTPParse {
     struct Head {
         var method: String?     // request
@@ -139,8 +135,8 @@ nonisolated final class SSEReassembler {
     private var lineBuf = ""
     private(set) var text = ""
     private(set) var reasoning = ""
-    private(set) var toolCalls: [Int: SessionRecord.ToolCall] = [:]   // chat: by index
-    private var toolOrder: [Int] = []
+    private(set) var toolCalls: [String: SessionRecord.ToolCall] = [:]
+    private var toolOrder: [String] = []
     private(set) var finishReason: String?
     var usage: SessionRecord.Usage?
     private(set) var sawDone = false
@@ -181,14 +177,15 @@ nonisolated final class SSEReassembler {
         if let tcs = delta["tool_calls"] as? [[String: Any]] {
             for tc in tcs {
                 let idx = (tc["index"] as? Int) ?? 0
-                var entry = toolCalls[idx] ?? SessionRecord.ToolCall()
-                if toolCalls[idx] == nil { toolOrder.append(idx) }
+                let key = "chat-\(idx)"
+                var entry = toolCalls[key] ?? SessionRecord.ToolCall()
+                if toolCalls[key] == nil { toolOrder.append(key) }
                 if let id = tc["id"] as? String { entry.id = id }
                 if let fn = tc["function"] as? [String: Any] {
                     if let n = fn["name"] as? String { entry.name = (entry.name ?? "") + n }
                     if let a = fn["arguments"] as? String { entry.argumentsJSON = (entry.argumentsJSON ?? "") + a }
                 }
-                toolCalls[idx] = entry
+                toolCalls[key] = entry
             }
         }
     }
@@ -200,7 +197,7 @@ nonisolated final class SSEReassembler {
         case "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
             if let d = obj["delta"] as? String { reasoning += d }
         case "response.function_call_arguments.delta":
-            let key = (obj["item_id"] as? String)?.hashValue ?? toolOrder.count
+            let key = (obj["item_id"] as? String) ?? "resp-\(toolOrder.count)"
             var entry = toolCalls[key] ?? SessionRecord.ToolCall()
             if toolCalls[key] == nil { toolOrder.append(key) }
             if let id = obj["item_id"] as? String { entry.id = id }
@@ -307,11 +304,6 @@ nonisolated enum HTTPParseTee {
     }
 }
 
-extension Data {
-    fileprivate func hexTrimmed() -> String {
-        String(decoding: self, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
 // MARK: - transport
 
 // NWListener byte pipe with the tee bolted on. One Flow per client connection;

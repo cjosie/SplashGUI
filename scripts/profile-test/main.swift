@@ -39,7 +39,7 @@ func runTests() {
     check("key keeps the :variant suffix", cfg.modelProfiles.keys.contains { $0.contains(":UD-IQ3_XXS") })
 
     // B: switching to an untuned model starts it on its CARD — the thinking-mode set both cards
-    // publish (1.0 / 0.95 / 20, reasoning left at model default), not the old invented numbers.
+    // publish (1.0 / 0.95 / 20, reasoning left at model default).
     let m = AppModel()
     m.config.sampling.temperature = 0.42
     m.config.sampling.reasoningEffort = "low"
@@ -185,10 +185,10 @@ func runTests() {
         check("lanAccess round-trips through a save", false, "encode/decode threw")
     }
 
-    // F3: the serve options from the 1.5.0 option audit (offline, thinking budget, verify-rows,
-    // served name, arch memory knobs). Defaults stay off the command line, a pre-audit config
-    // decodes them defaulted (the Codable trap), and the arch knobs reach only models that
-    // have the memory they tune.
+    // F3: the serve options (offline, thinking budget, verify-rows, served name, arch memory
+    // knobs). Defaults stay off the command line, a config written before they existed decodes
+    // them defaulted (the Codable trap), and the arch knobs reach only models that have the
+    // memory they tune.
     func flagValue(_ args: [String], _ flag: String) -> String? {
         guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
         return args[i + 1]
@@ -301,7 +301,7 @@ func runTests() {
           effTyped.maxContext == "64K" && effTyped.maxMemory == "24G"
             && effTyped.kvFormat == "bf16" && effTyped.maxCacheDisk == "10G")
 
-    // J: the Codable trap on the new fields — a profile saved before `auto` existed must
+    // J: the Codable trap on the fields — a profile saved before `auto` existed must
     // decode with it defaulted, and grantedAuto must round-trip.
     let legacy = #"{"sampling":{"temperature":0.5,"topP":0.9,"topK":10},"maxContext":"50K","maxMemory":"auto","kvFormat":"bf16","languageOnly":false}"#
     if let pdata = legacy.data(using: .utf8),
@@ -348,7 +348,7 @@ func runTests() {
         check("all-auto schema 5 migrates to Auto on", false, "fixture unreadable")
     }
 
-    // L: the Provider tab's new sampling fields and client configs.
+    // L: the Provider tab's sampling fields and client configs.
     let legacySampling = #"{"temperature":0.5,"topP":0.9,"topK":10,"maxTokens":null,"seed":null,"reasoningEffort":"none"}"#
     if let sdata = legacySampling.data(using: .utf8),
        let sam = try? JSONDecoder().decode(SamplingDefaults.self, from: sdata) {
@@ -509,7 +509,7 @@ func runTests() {
     m.config.run.modelID = priorID
 
     // M: engine source — the mode field's tolerant decode and the latest-release resolver.
-    // Synthetic JSON, not the live fixture: the app now WRITES engineMode, so the on-disk
+    // Synthetic JSON, not the live fixture: the app writes engineMode, so the on-disk
     // config always has the key and cannot prove the absent-key default.
     let noMode = #"{"engineURLOverride":"keep-me","sampling":{"temperature":0.3}}"#
     if let nm = noMode.data(using: .utf8),
@@ -551,7 +551,7 @@ func runTests() {
         check("latest equal to the compiled-in pin resolves to the identical pin", false, "pin() returned nil")
         check("latest-equals-pinned reuses the pinned install dir", false)
     }
-    // A latest NEWER than the pin (the 1.5.0-pinned era's 1.6.0 release): the URL diverges, so
+    // A latest NEWER than the pin: the URL diverges, so
     // dirName keys a hash-named twin — and the payload still installs because the extracted
     // directory is DISCOVERED (findExtractedRoot, above), not assumed (the redownload-loop bug).
     let v150 = "1ddc28bf7bfda8833859a913d7072e2aac9072addb9eb5664f3bf1a83a8d6ee2"
@@ -720,8 +720,8 @@ func runTests() {
     check("an empty staging area yields no payload dir",
           EngineInstaller.findExtractedRoot(in: stageFixture, preferring: hashed) == nil)
 
-    // N: the catalog must track the installed engine's suggested list (the sync guard for the
-    // Splash-defaults swap). Skips with a PASS when no engine is installed on the test machine.
+    // N: the catalog must track the installed engine's suggested list. Skips with a PASS when
+    // no engine is installed on the test machine.
     let tsv = EngineInstaller.currentLink.appendingPathComponent("install/suggested-models.tsv")
     if let tsvText = try? String(contentsOf: tsv, encoding: .utf8) {
         let ids = tsvText.split(separator: "\n").compactMap { line -> String? in
@@ -772,8 +772,8 @@ func runTests() {
             && mlxK.expert && q2K.expert
             && !denseK.ple && !denseK.expert && !denseK.sparseKv)
 
-    // O: local models + the saved custom list (spec scratch/spec-local-and-saved-models.md).
-    // The Codable trap on the new list, the engine's argv rules for --model-dir/--mmproj/
+    // O: local models + the saved custom list.
+    // The Codable trap on the list, the engine's argv rules for --model-dir/--mmproj/
     // --revision, the ID validator mirroring parse_model_id, the local file validators, and
     // the saved entry behaving like a catalog row for profiles.
     let noSaved = #"{"run":{"port":8123,"modelID":"someone/Model:x"},"sampling":{"temperature":0.4}}"#

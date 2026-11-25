@@ -1,9 +1,8 @@
 #!/bin/zsh
 # Usage: bundle-app.sh [--release] [--open]
-# Default: ad-hoc signed build/SplashGUI.app for local dev.
 # --release: Developer ID + hardened runtime + timestamp, then a notarized, stapled
 # build/SplashGUI-<version>.dmg. Requires SIGN_IDENTITY (a "Developer ID Application"
-# identity) and NOTARY_PROFILE (a notarytool keychain profile) in the environment.
+# identity) and NOTARY_PROFILE (a notarytool keychain profile).
 # The engine is downloaded by the app at runtime, so only the app's own binary is signed.
 set -e
 cd "$(dirname "$0")/.."

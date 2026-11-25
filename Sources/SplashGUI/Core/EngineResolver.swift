@@ -9,29 +9,25 @@ enum EngineMode: String, Codable, Equatable {
 }
 
 // Resolves the newest Splash engine release from GitHub so "always latest" can install a
-// build this app never shipped with. The checksum comes from the release's own .sha256
-// asset and is verified by EngineInstaller exactly like the compiled-in pin; HTTPS plus
-// that digest is the same trust the published release gives the pin at review time.
-// Every failure — offline, rate-limited, unexpected payload — returns nil and the caller
-// falls back, so this can never block Start.
+// build this app never shipped with. The checksum comes from the release's own .sha256 asset
+// and is verified by EngineInstaller exactly like the compiled-in pin — HTTPS plus that
+// digest is the same trust the published release gives the pin at review time. Every failure
+// returns nil and the caller falls back, so this can never block Start.
 struct EngineResolver {
     static let repo = "incoai/splash"
     static var latestAPI: String { "https://api.github.com/repos/\(repo)/releases/latest" }
 
-    // The release tag as an engine version: GitHub download paths use the tag, the payload
-    // names the version; today they are the same string ("1.5.0"), but a future "v" prefix
-    // must not leak into the version or the file name.
+    // The release tag as an engine version (download paths use the tag, the payload names it) — a future "v" must not leak into either.
     static func version(tagName: String) -> String {
         tagName.hasPrefix("v") ? String(tagName.dropFirst()) : tagName
     }
 
     static func assetFile(version: String) -> String {
-        "splash-\(version)-arm64-macos26.tar.gz"
+        EngineInstaller.payloadBaseName(version: version) + ".tar.gz"
     }
 
-    // The pure half, so the harness can feed it a fixture instead of the network: a
-    // release's tag, asset names, and .sha256 text become an EnginePin — or nil when the
-    // expected payload is not there. The URL is built exactly like EngineInstaller's
+    // The pure half: a release's tag, asset names, and .sha256 text become an EnginePin — or
+    // nil when the expected payload is not there. The URL is built exactly like EngineInstaller's
     // defaultPin so a latest equal to the compiled-in pin reuses its install directory.
     static func pin(tagName: String, assetNames: [String], sha256Text: String) -> EnginePin? {
         let v = version(tagName: tagName)
@@ -60,8 +56,7 @@ struct EngineResolver {
     private static func request(_ url: String) -> URLRequest? {
         guard let u = URL(string: url) else { return nil }
         var r = URLRequest(url: u, timeoutInterval: 15)
-        // The API serves versioned JSON without this only by default; pin it so a media-type
-        // change cannot rename tag_name/assets under us.
+        // The API serves versioned JSON only by default; pin the media type so a change cannot rename tag_name/assets.
         r.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         return r
     }

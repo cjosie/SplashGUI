@@ -340,8 +340,7 @@ struct RunTab: View {
             HStack(spacing: 6) {
                 Toggle("Built-in web chat page", isOn: $model.config.run.showWebUI)
                     .help("Serve Splash's built-in chat page at the server URL.")
-                // Shipped bug fixed: the button used to show whenever the server was ready,
-                // even with the page off (--no-webui) — where it opened a URL that isn't served.
+                // The button only shows when the page is served (--no-webui means no URL to open).
                 if model.config.run.showWebUI, model.phase == .ready {
                     Button("Open built-in chat") { openWebChat() }
                 }
@@ -419,8 +418,7 @@ struct RunTab: View {
                 if !model.logTail.isEmpty {
                     Button {
                         let text = model.logTail.joined(separator: "\n")
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(text, forType: .string)
+                        copyToClipboard(text)
                     } label: {
                         Image(systemName: "doc.on.doc")
                     }

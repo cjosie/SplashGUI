@@ -104,6 +104,7 @@ final class SplashServer {
             return LaunchTarget(executable: py.path, prefixArgs: ["-u", EngineInstaller.launcherPath.path])
         }
         #if DEBUG
+        // DEBUG-only: release builds never use the Homebrew cask directly and always launch the installed engine.
         let brew = "/opt/homebrew/bin/splash"
         if FileManager.default.isExecutableFile(atPath: brew) {
             return LaunchTarget(executable: brew, prefixArgs: [])
@@ -232,7 +233,7 @@ final class SplashServer {
         }
         // The tier's files only outlive the process with this. The engine refuses it without a
         // quota, so it follows the storage cache setting.
-        if config.persistentCache, !config.maxCacheDisk.isEmpty, config.maxCacheDisk != "0" {
+        if config.persistentCache, !config.maxCacheDisk.isEmpty, config.maxCacheDisk.lowercased() != "0" {
             args += ["--persistent-cache"]
         }
         // How long the engine keeps its memory wired without a request. "auto" leaves the

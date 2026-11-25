@@ -303,6 +303,21 @@ enum MachineInfo {
         guard let bytes else { return "–" }
         return String(format: "%.1f GB", Double(bytes) / 1_073_741_824)
     }
+
+    // Full-precision byte format (GB / MB / KB / B) for size displays.
+    static func bytesText(_ bytes: Int?) -> String {
+        guard let bytes else { return "–" }
+        if bytes >= 1_000_000_000 { return String(format: "%.1f GB", Double(bytes) / 1e9) }
+        if bytes >= 1_000_000 { return String(format: "%.1f MB", Double(bytes) / 1e6) }
+        if bytes >= 1_000 { return "\(bytes / 1000) KB" }
+        return "\(bytes) B"
+    }
+
+    // The host a client dials: the LAN address when Serve on LAN is on (falling back to
+    // loopback while none is leased), loopback otherwise.
+    static func effectiveHost(lanEnabled: Bool) -> String {
+        lanEnabled ? (lanIPv4Address ?? "127.0.0.1") : "127.0.0.1"
+    }
 }
 
 struct AutoProfile: Equatable {

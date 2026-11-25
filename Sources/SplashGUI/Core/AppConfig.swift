@@ -1,10 +1,13 @@
 import Foundation
 
 struct RunConfig: Codable, Equatable {
+    // The app's default serve port; Splash's own default is 8000.
+    static let defaultPort = 8095
+
     var modelID: String = "unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS"
-    var port: Int = 8095
-    // Auto sizes context, memory and KV from the Metal ceiling and the model's weights, and
-    // leaves the SSD cache to the engine. Off restores the typed values below.
+    var port: Int = defaultPort
+    // Auto sizes context, memory and KV from the Metal ceiling and the weights, leaving the SSD
+    // cache to the engine. Off restores the typed values below.
     var auto: Bool = true
     var maxContext: String = "auto"
     var maxMemory: String = "auto"
@@ -13,8 +16,7 @@ struct RunConfig: Codable, Equatable {
     var languageOnly: Bool = false
     var decodeShare: Double = 0.5
     var showWebUI: Bool = true
-    // Bind every IPv4 interface (0.0.0.0) so other machines on the LAN can connect.
-    // Off leaves the engine's 127.0.0.1 default: this Mac only.
+    // Bind every IPv4 interface (0.0.0.0) so other machines on the LAN can connect; off leaves the engine's 127.0.0.1 default.
     var lanAccess: Bool = false
     var defaultReasoningEffort: String? = nil
     // How long the engine keeps its memory wired without a request. Its own default is 10m:
@@ -39,17 +41,15 @@ struct RunConfig: Codable, Equatable {
     var servedModelName: String = ""
     // Report the served name in responses and /v1/models; off keeps the loaded model ID.
     var announceServedName: Bool = false
-    // The arch-specific memory knobs: PLE and sparse-KV belong to Qwen3.8-Flash-Next GGUFs,
-    // expert slots to MoE rows. The Run tab shows only what the selected model has, and the
-    // launch path clears the rest (clearingUnsupportedMemoryKnobs), so a typed value never
-    // reaches a model without that memory while the saved value waits for the switch back.
+    // The arch-specific memory knobs: PLE and sparse-KV belong to Qwen3.8-Flash-Next GGUFs, expert
+    // slots to MoE rows. The Run tab shows only what the selected model has, and the launch path
+    // clears the rest, so a typed value never reaches a model without that memory.
     var pleMemory: String = ""
     var expertMemory: String = ""
     var sparseKvMemory: String = ""
     var schemaVersion: Int? = 6
 
-    // The memberwise initializer goes away with any custom initializer, and the defaults
-    // below are what a missing key falls back to.
+    // The memberwise initializer goes away with any custom initializer; defaults below back missing keys.
     init() {}
 
     // Explicit decoder: a config.json written by an older build lacks the fields added since,
@@ -93,16 +93,15 @@ struct RunConfig: Codable, Equatable {
         schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? d.schemaVersion
     }
 
-    private static func isAuto(_ value: String) -> Bool {
+    static func isAuto(_ value: String) -> Bool {
         let v = value.lowercased()
         return v == "auto" || v.isEmpty
     }
 
-    // Resolves what actually launches. With Auto on, the four covered fields come from the
-    // profile (or Splash's own sizing when there is none — a custom ID) and the SSD cache is
-    // left to the engine; the typed values stay saved untouched. With Auto off, a field that
-    // still says "auto" (the pre-switch spelling) falls back to the profile as before, so
-    // SplashServer stays policy-free and never sees "auto" for --kv-format.
+    // Resolves what actually launches. Auto on: the covered fields come from the profile (or
+    // Splash's own sizing for a custom ID), the SSD cache stays the engine's, typed values stay saved.
+    // Auto off: a field still reading "auto" (the pre-switch spelling) falls back to the profile, so
+    // SplashServer never sees "auto" for --kv-format.
     func effective(using profile: AutoProfile?) -> RunConfig {
         var out = self
         if auto {
@@ -128,9 +127,8 @@ struct RunConfig: Codable, Equatable {
         return out
     }
 
-    // Policy for the launch copy: memory knobs the selected model's arch does not have are
-    // dropped, so the engine never sees them for a model that cannot use them. The saved
-    // config keeps the typed values for the model that does.
+    // Launch-copy policy: memory knobs the selected arch lacks are dropped, so the engine never
+    // sees them for a model that cannot use them. The saved config keeps the typed values.
     mutating func clearingUnsupportedMemoryKnobs(forModelID id: String) {
         let k = CatalogModel.memoryKnobs(forID: id)
         if !k.ple { pleMemory = "" }
@@ -158,6 +156,23 @@ struct SamplingDefaults: Codable, Equatable {
 
     init() {}
 
+    // The model card's thinking-mode set (both cards publish the same defaults).
+    mutating func applyCard(_ e: CatalogModel) {
+        temperature = e.cardTemperature
+        topP = e.cardTopP
+        topK = e.cardTopK
+        presencePenalty = e.cardPresencePenalty
+        minP = e.cardMinP
+    }
+
+    mutating func applyCardOff(_ e: CatalogModel) {
+        temperature = e.cardOffTemperature
+        topP = e.cardOffTopP
+        topK = e.cardOffTopK
+        presencePenalty = e.cardOffPresencePenalty
+        minP = e.cardOffMinP
+    }
+
     // Tolerant decoder (the Codable trap): configs saved before presencePenalty/minP existed
     // must decode with them defaulted, not throw.
     enum CodingKeys: String, CodingKey {
@@ -178,9 +193,9 @@ struct SamplingDefaults: Codable, Equatable {
     }
 }
 
-// What one model keeps its settings as, so switching models in the picker swaps each model's
-// own sampling and serve fields back in. `reasoningEffort` lives in `sampling`; applying a
-// profile also mirrors it into `run.defaultReasoningEffort`, which is the serve flag.
+// What one model keeps its settings as, so switching models in the picker swaps each model's own
+// sampling and serve fields back in. `reasoningEffort` lives in `sampling`; applying a profile also
+// mirrors it into `run.defaultReasoningEffort`, which is the serve flag.
 struct ModelProfile: Codable, Equatable {
     var sampling = SamplingDefaults()
     var auto: Bool = true
@@ -197,7 +212,6 @@ struct ModelProfile: Codable, Equatable {
     // with it at its default, not throw — a nested failure drops the whole config to factory.
     init() {}
 
-    // The memberwise initializer the custom initializers take away.
     init(sampling: SamplingDefaults, auto: Bool, maxContext: String,
          maxMemory: String, kvFormat: String, languageOnly: Bool,
          servedModelName: String, announceServedName: Bool) {
@@ -325,8 +339,8 @@ struct SavedModel: Codable, Identifiable, Equatable {
     }
 
     // The auto API ID for a local file or directory: local/<name>[:variant], sanitized to the
-    // repo-ID shape. The variant is the part after the file name's last "-" when it reads like
-    // a quant name (no lowercase, with a digit or underscore), e.g. UD-IQ3_XXS's IQ3_XXS.
+    // repo-ID shape. The variant is the part after the last "-" when it reads like a quant name
+    // (no lowercase, with a digit or underscore), e.g. UD-IQ3_XXS's IQ3_XXS.
     static func localID(forPath path: String) -> String {
         var name = (path as NSString).lastPathComponent
         if name.lowercased().hasSuffix(".gguf") { name = String(name.dropLast(".gguf".count)) }
@@ -345,9 +359,9 @@ struct SavedModel: Codable, Identifiable, Equatable {
         return "local/\(base)" + (variant.isEmpty ? "" : ":\(variant)")
     }
 
-    // Keeps [A-Za-z0-9._-], maps everything else to "-", collapses runs of "-" and ".", then
-    // trims to an alphanumeric-or-underscore on both ends and drops a ".git" ending — the
-    // exact refusals validID checks, so a sanitized segment is always a valid repo segment.
+    // Keeps [A-Za-z0-9._-], maps everything else to "-", collapses runs of "-" and ".", trims to
+    // an alphanumeric-or-underscore on both ends, and drops a ".git" ending — the exact refusals
+    // validID checks, so a sanitized segment is always a valid repo segment.
     static func sanitizeSegment(_ s: String) -> String {
         var out = ""
         for c in s {
@@ -368,12 +382,9 @@ struct SavedModel: Codable, Identifiable, Equatable {
 struct AppConfig: Codable, Equatable {
     var run = RunConfig()
     var sampling = SamplingDefaults()
-    // Archive of per-model settings, keyed by the full model ID including its `:variant`
-    // (that suffix is part of Splash's selection-link name, so never strip it). The live
-    // editing state stays in `sampling`/`run`; an entry is written when you switch away from
-    // that model, and a model with no entry gets its task card instead.
+    // Archive of per-model settings, keyed by the full model ID including its `:variant` (part of
+    // Splash's selection-link name, so never strip it). The live editing state stays in `sampling`/`run`.
     var modelProfiles: [String: ModelProfile] = [:]
-    // Last Splash-granted context/memory for custom IDs, keyed by model ID (see GrantedSettings).
     var grantedAuto: [String: GrantedSettings] = [:]
     // The user's kept models shown under "Saved" in the picker: saved Hub IDs and local
     // files, in the order added (see SavedModel). Removing an entry keeps its profile.
@@ -382,17 +393,15 @@ struct AppConfig: Codable, Equatable {
     var engineURLOverride: String = ""
     var engineSHA256Override: String = ""
     var checkEngineUpdate: Bool = true
-    // Which build to run: the compiled-in pin, the newest release, or a hand-set pin. The
-    // override fields above are the custom pin; they decode in every mode so a switch back
-    // to .custom restores whatever was typed before.
+    // Which build to run: the compiled-in pin, the newest release, or a hand-set pin. The override
+    // fields above are the custom pin; they decode in every mode so a switch back restores them.
     var engineMode: EngineMode = .pinned
     // Launch = start: serves the saved model on the saved port without a click. Skips when
-    // something already owns the port (the adopt path wins), and in the headless harness
-    // (SPLASHGUI_TEST=1) so tests never spawn a server.
+    // something already owns the port (the adopt path wins), or when SPLASHGUI_TEST is set.
     var startOnLaunch: Bool = false
-    // Session logging via the fronting proxy (scratch/spec-logging-proxy.md). Applies on
-    // the next Start: the proxy can only take the public port while the app launches the
-    // serve itself. LAN clients are piped but NOT recorded unless loggingLanClients is on.
+    // Session logging via the fronting proxy. Applies on the next Start: the proxy can only
+    // take the public port while the app launches the serve itself. LAN clients are piped but
+    // NOT recorded unless loggingLanClients is on.
     var loggingEnabled: Bool = false
     var loggingLanClients: Bool = false
     var loggingRetentionDays: Int = 90
@@ -471,12 +480,12 @@ struct CatalogModel: Identifiable, Equatable {
     // The tsv's MEMORY column: the smallest Mac RAM the vendor says the variant is meant for.
     // The picker's too-large warning gates on this, so note and warning agree by construction.
     var memoryGB: Int? = nil
-    // Immutable HF commit the pull is pinned to, so a catalog entry always names one exact set of
-    // bytes; nil = the repository's default branch (unpinned). Passed as serve --revision.
+    // Immutable HF commit the pull is pinned to, so an entry always names one exact set of bytes;
+    // nil = the repository's default branch (unpinned). Passed as serve --revision.
     var revision: String? = nil
     // The GGUF the engine links into assembly target/, and the sha256 Hugging Face publishes for
-    // it (the LFS oid). The engine records the same digest in its model.json, which is what the
-    // pre-flight check compares against — no re-hashing the file.
+    // it (the LFS oid) — the same digest the engine records in model.json, which the pre-flight
+    // check compares against.
     var targetFile: String? = nil
     var sha256: String? = nil
     // Sampling the model's own card recommends, so defaults come from the card instead of being
@@ -499,22 +508,20 @@ struct CatalogModel: Identifiable, Equatable {
     // Reasoning levels this model accepts; nil = all of them. Bonsai's card: defaults to xhigh,
     // medium for shorter answers, and `low` is NOT supported (it behaves like xhigh).
     var supportedEfforts: [String]? = nil
-    // The card's own words about reasoning depth, shown in the effort tooltip.
     var cardEffortNote: String = "The card recommends thinking mode; leave the effort at model default unless answers run long."
     // Auto's KV-per-token and window constants are measured on this arch only; other rows get
     // nil from autoProfile and the engine sizes itself.
     var qwen27BArch: Bool = false
-    // Which arch-specific serve memory knobs this row's model actually has: the PLE n-gram
-    // table and block-sparse KV are Qwen3.8-Flash-Next features; routed experts are the A3B
-    // MoE rows. The Run tab shows a knob only where its row (or the ID heuristics below)
-    // says true, and the launch path drops the rest.
+    // Which arch-specific serve memory knobs this row's model actually has: the PLE n-gram table
+    // and block-sparse KV are Qwen3.8-Flash-Next features; routed experts are the A3B MoE rows.
+    // The Run tab shows a knob only where its row (or the ID heuristics below) says true.
     var supportsPleMemory: Bool = false
     var supportsExpertMemory: Bool = false
     var supportsSparseKvMemory: Bool = false
 
     // The knobs that apply to a model ID: the catalog row's flags when the ID is a row, else
-    // name heuristics for hand-typed IDs (A3B marks an MoE; Flash-Next marks the PLE table
-    // and the block-sparse KV). An ID matching neither gets no knobs and the engine sizes it.
+    // name heuristics for hand-typed IDs (A3B marks an MoE; Flash-Next marks the PLE table and
+    // the block-sparse KV). An ID matching neither gets no knobs.
     static func memoryKnobs(forID id: String) -> (ple: Bool, expert: Bool, sparseKv: Bool) {
         if let e = catalog.first(where: { $0.id == id }) {
             return (e.supportsPleMemory, e.supportsExpertMemory, e.supportsSparseKvMemory)
@@ -531,11 +538,7 @@ struct CatalogModel: Identifiable, Equatable {
     // and auto serve fields.
     func cardProfile() -> ModelProfile {
         var p = ModelProfile()
-        p.sampling.temperature = cardTemperature
-        p.sampling.topP = cardTopP
-        p.sampling.topK = cardTopK
-        p.sampling.presencePenalty = cardPresencePenalty
-        p.sampling.minP = cardMinP
+        p.sampling.applyCard(self)
         return p
     }
 
@@ -700,11 +703,10 @@ final class ConfigStore {
             if (cfg.run.schemaVersion ?? 1) < 6 {
                 // The Auto switch: on only when every field it covers was still "auto".
                 // Otherwise off, with the existing values as the typed ones.
-                func isAuto(_ v: String) -> Bool { v.lowercased() == "auto" || v.isEmpty }
-                let allAuto = isAuto(cfg.run.maxContext) && isAuto(cfg.run.maxMemory)
-                    && isAuto(cfg.run.kvFormat) && isAuto(cfg.run.maxCacheDisk)
+                let allAuto = RunConfig.isAuto(cfg.run.maxContext) && RunConfig.isAuto(cfg.run.maxMemory)
+                    && RunConfig.isAuto(cfg.run.kvFormat) && RunConfig.isAuto(cfg.run.maxCacheDisk)
                 cfg.run.auto = allAuto
-                if !allAuto && isAuto(cfg.run.kvFormat) {
+                if !allAuto && RunConfig.isAuto(cfg.run.kvFormat) {
                     // The KV picker no longer has an Auto segment — resolve what Auto would
                     // have picked once, so the typed set is complete.
                     let id = cfg.run.modelID

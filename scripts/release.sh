@@ -1,7 +1,6 @@
 #!/bin/zsh
-# release.sh: tag the current commit splashgui/v<version>, push main + the tag to origin,
-# and create the GitHub release with the notarized DMG as its asset.
-# Precondition: scripts/bundle-app.sh --release (builds, notarizes and staples the DMG).
+# release.sh: tag the current commit splashgui/v<version>, push main + the tag, and create the
+# GitHub release with the notarized DMG. Precondition: scripts/bundle-app.sh --release first.
 # Auth: the `gh` CLI (run `gh auth login` once).
 set -euo pipefail
 cd "$(dirname "$0")/.."

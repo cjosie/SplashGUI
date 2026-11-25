@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 // Client configs are the app's only path to Splash for sampling: the app itself sends no
-// requests (Presets retired), and the engine has no serve-level sampling defaults (spec §7).
+// requests, and the engine has no serve-level sampling defaults.
 struct ProviderTab: View {
     @EnvironmentObject var model: AppModel
     @State private var client: ProviderClient = .opencode
@@ -156,9 +156,7 @@ struct ProviderTab: View {
             )
             HStack(spacing: 10) {
                 Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(model.clientConfigText(for: client, useLAN: useLAN),
-                                                   forType: .string)
+                    copyToClipboard(model.clientConfigText(for: client, useLAN: useLAN))
                 }
                 Button("Save…") { saveConfig() }
                 Spacer()
@@ -230,7 +228,7 @@ struct ProviderTab: View {
         return "Forget this model's saved settings and go back to the shipped defaults: the sampling every card in the catalog publishes." + serve
     }
 
-    private func clamped(_ value: Binding<Double>, _ range: ClosedRange<Double>, digits: Int = 2) -> Binding<Double> {
+    private func clamped(_ value: Binding<Double>, _ range: ClosedRange<Double>) -> Binding<Double> {
         Binding(
             get: { value.wrappedValue },
             set: { value.wrappedValue = min(max($0, range.lowerBound), range.upperBound) }

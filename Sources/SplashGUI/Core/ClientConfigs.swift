@@ -1,9 +1,8 @@
 import Foundation
 
-// The coding clients the Provider tab writes configs for. The OpenCode shape mirrors the
-// engine's own connector (install/clients.py _opencode, engine 1.5.0, unchanged since 1.3.2) plus sampling; the
-// Claude Code env set and the Codex TOML mirror _claude and _codex. Zed's shape is from its
-// current docs (OpenAI-compatible endpoints + agent.model_parameters).
+// The coding clients the Provider tab writes configs for. The OpenCode shape mirrors the engine's
+// own connector (install/clients.py _opencode, engine 1.5.0, unchanged since 1.3.2); Claude Code
+// and Codex mirror _claude and _codex. Zed's shape is from its current docs.
 enum ProviderClient: String, CaseIterable, Identifiable {
     case opencode = "OpenCode"
     case zed = "Zed"
@@ -62,8 +61,7 @@ enum SamplingField {
     case temperature, topP, topK, presencePenalty, minP, maxTokens, seed
 }
 
-// Everything the config text is built from, resolved by AppModel (granted window when the
-// server runs, configured/Auto values otherwise).
+// Everything the config text is built from, resolved by AppModel (granted window when the server runs).
 struct ClientConfigContext {
     let client: ProviderClient
     let modelID: String
@@ -74,8 +72,7 @@ struct ClientConfigContext {
     let contextTokens: Int
     let inputModalities: [String]
     let sampling: SamplingDefaults
-    // The model card's thinking-off set, when the model has a card. Pi writes it as
-    // samplingParamsByThinkingLevel.off so no-think turns can use different values.
+    // The model card's thinking-off set, when the model has a card; Pi writes it as samplingParamsByThinkingLevel.off.
     var offSampling: SamplingDefaults? = nil
     // Reasoning levels this model accepts; defaults to every level Splash's API takes.
     var efforts: [String] = CatalogModel.allEfforts
@@ -84,8 +81,7 @@ struct ClientConfigContext {
 }
 
 enum ClientConfigs {
-    // The output allowance OpenCode, Zed and Codex reserve: CLIENT_RESPONSE_TOKENS in the
-    // engine connector, or a quarter of the window when that is less.
+    // The output allowance OpenCode and Zed reserve: CLIENT_RESPONSE_TOKENS in the engine connector, or a quarter of the window when less.
     static func responseTokens(context: Int) -> Int {
         min(32_768, max(1, context / 4))
     }
@@ -105,42 +101,38 @@ enum ClientConfigs {
     private static func json(_ obj: Any) -> String {
         let data = (try? JSONSerialization.data(withJSONObject: obj,
                                                 options: [.prettyPrinted, .sortedKeys])) ?? Data()
-        // JSONSerialization escapes every "/" as "\/" — valid but ugly in a preview meant to
-        // be read and pasted. "\/" is the only sequence it produces this way, safe to undo.
+        // JSONSerialization escapes every "/" as "\/"; it is the only sequence it produces this way, safe to undo in the preview.
         return String(decoding: data, as: UTF8.self).replacingOccurrences(of: "\\/", with: "/")
     }
 
-    private static func inputModalities(_ ctx: ClientConfigContext) -> [String] {
-        ctx.inputModalities
-    }
-
-    // JSONSerialization prints a Double's full binary expansion (0.95 -> 0.94999999999999996).
-    // A decimal built from Swift's shortest description round-trips to the value the user
-    // typed and reads cleanly in the pasted config.
+    // JSONSerialization prints a Double's full binary expansion; a decimal from Swift's shortest description round-trips cleanly.
     private static func decimal(_ value: Double) -> NSDecimalNumber {
         NSDecimalNumber(string: String(value))
     }
 
-    // This snippet only adds the provider. It deliberately does NOT set the root `model` or
-    // `small_model` and does NOT define `agents`: those are the user's defaults, and overriding
-    // them was making every agent point at Splash. Splash appears as one more entry in
-    // /models; its reasoning efforts appear as variants in /variants.
+    // One writer for the five sampling fields plus the optional seed.
+    private static func samplingBody(_ s: SamplingDefaults) -> [String: Any] {
+        var body: [String: Any] = [
+            "temperature": decimal(s.temperature),
+            "top_p": decimal(s.topP),
+            "top_k": s.topK,
+            "presence_penalty": decimal(s.presencePenalty),
+            "min_p": decimal(s.minP),
+        ]
+        if let seed = s.seed { body["seed"] = seed }
+        return body
+    }
+
+    // This snippet only adds the provider — deliberately no root `model`, `small_model` or `agents`
+    // (the user's defaults; overriding them pointed every agent at Splash). Splash appears as one
+    // more /models entry; its reasoning efforts as /variants.
     private static func opencode(_ ctx: ClientConfigContext) -> String {
         let out = responseTokens(context: ctx.contextTokens)
-        let modalities = inputModalities(ctx)
-        // Sampling rides in the model's `body`, which V2 merges into the request body verbatim.
-        // (V1's `options` was the old path; agent-level request fields are not sent in V2.)
-        var body: [String: Any] = [
-            "temperature": decimal(ctx.sampling.temperature),
-            "top_p": decimal(ctx.sampling.topP),
-            "top_k": ctx.sampling.topK,
-            "presence_penalty": decimal(ctx.sampling.presencePenalty),
-            "min_p": decimal(ctx.sampling.minP),
-        ]
-        if let seed = ctx.sampling.seed { body["seed"] = seed }
+        let modalities = ctx.inputModalities
+        // Sampling rides in the model's `body`, which V2 merges into the request body verbatim (V1's `options` was the old path).
+        let body = samplingBody(ctx.sampling)
 
-        // One variant per effort Splash accepts for this model. Splash reads snake_case
-        // `reasoning_effort` from the request body, so the body overlay is the reliable path.
+        // One variant per effort Splash accepts; Splash reads snake_case `reasoning_effort` from the body, so the overlay is the reliable path.
         let variants: [[String: Any]] = ctx.efforts.map { effort in
             ["id": effort, "body": ["reasoning_effort": effort]]
         }
@@ -158,8 +150,7 @@ enum ClientConfigs {
                 "output": ["text"],
                 "reasoning": reasoning,
             ],
-            // Splash streams thinking in reasoning_content and reads the output cap as
-            // max_tokens, so tell the OpenAI-compatible package both.
+            // Splash streams thinking in reasoning_content and reads the cap as max_tokens, so tell the OpenAI-compatible package both.
             "compatibility": [
                 "reasoningField": "reasoning_content",
                 "maxTokensField": "max_tokens",
@@ -190,14 +181,13 @@ enum ClientConfigs {
     // MARK: - Zed
 
     private static func zed(_ ctx: ClientConfigContext) -> String {
-        let modalities = inputModalities(ctx)
+        let modalities = ctx.inputModalities
         var model: [String: Any] = [
             "name": ctx.modelID,
             "display_name": ctx.label,
             "max_tokens": ctx.contextTokens,
             "max_output_tokens": responseTokens(context: ctx.contextTokens),
-            // Splash streams thinking in a dedicated reasoning_content field and takes the
-            // output cap as max_tokens; tool calling works. Images follow the vision toggle.
+            // Splash streams thinking in a dedicated reasoning_content field and takes the output cap as max_tokens; tool calling works.
             "capabilities": [
                 "tools": true,
                 "images": modalities != ["text"],
@@ -208,9 +198,9 @@ enum ClientConfigs {
                 "max_tokens_parameter": true,
             ],
         ]
-        if ctx.sampling.reasoningEffort != "none" {
+        if let effort = ctx.sampling.reasoningEffort, effort != "none" {
             // Tells Zed which effort to send when thinking is on; unset = the server default.
-            model["reasoning_effort"] = ctx.sampling.reasoningEffort ?? "medium"
+            model["reasoning_effort"] = effort
         }
         var root: [String: Any] = [
             "language_models": [
@@ -222,10 +212,9 @@ enum ClientConfigs {
                 ]
             ]
         ]
-        // Zed carries temperature per model (agent.model_parameters); the provider is omitted
-        // so the entry matches Zed's provider key for the custom provider regardless of its
-        // exact spelling. Keys stay out of settings.json — Zed wants SPLASH_API_KEY in the
-        // environment (generated from the provider name), noted in the tab's caption.
+        // Zed carries temperature per model (agent.model_parameters); the provider is omitted so the
+        // entry matches Zed's provider key regardless of its exact spelling. Keys stay out of
+        // settings.json — Zed wants SPLASH_API_KEY in the environment (generated from the provider name).
         if ctx.sampling.temperature > 0 {
             root["agent"] = ["model_parameters": [["model": ctx.modelID,
                                                    "temperature": ctx.sampling.temperature]]]
@@ -236,9 +225,8 @@ enum ClientConfigs {
     // MARK: - Claude Code
 
     private static func claudeCode(_ ctx: ClientConfigContext) -> String {
-        // Mirrors the engine connector's _claude environment. ANTHROPIC_BASE_URL takes the
-        // bare server URL — Claude Code appends /v1/messages itself. No sampling fields:
-        // Claude Code sets its own per request.
+        // Mirrors the engine connector's _claude environment. ANTHROPIC_BASE_URL takes the bare
+        // server URL (Claude Code appends /v1/messages itself); no sampling fields — Claude Code sets its own.
         let env: [String: Any] = [
             "ANTHROPIC_BASE_URL": "http://\(ctx.host):\(ctx.port)",
             "ANTHROPIC_AUTH_TOKEN": "local",
@@ -256,8 +244,7 @@ enum ClientConfigs {
     // MARK: - Codex
 
     private static func codex(_ ctx: ClientConfigContext) -> String {
-        // Mirrors the engine connector's _codex -c overrides, as the config.toml shape.
-        // wire_api = responses: Codex speaks /v1/responses, which Splash serves.
+        // Mirrors the engine connector's _codex -c overrides; wire_api = responses (Codex speaks /v1/responses, which Splash serves).
         """
         model = "\(ctx.modelID)"
         model_provider = "splash"
@@ -275,53 +262,32 @@ enum ClientConfigs {
 
     // MARK: - Pi
 
-    // Mirrors the engine's `splash pi` connector (install/clients.py _write_pi_provider):
-    // a provider named for the server, an openai-completions endpoint, and one model entry.
-    // Pi reads custom providers from models.json in its agent directory; the block merges
-    // beside the user's other providers.
+    // Mirrors the engine's `splash pi` connector (install/clients.py _write_pi_provider): a provider named
+    // for the server, an openai-completions endpoint, and one model entry. Pi reads custom providers from
+    // models.json in its agent directory; the block merges beside the user's other providers.
     private static func pi(_ ctx: ClientConfigContext) -> String {
-        let provider = ctx.port == 8095 ? "splash" : "splash-\(ctx.port)"
+        let provider = ctx.port == RunConfig.defaultPort ? "splash" : "splash-\(ctx.port)"
         var model: [String: Any] = [
             "id": ctx.modelID,
             "reasoning": true,
-            // Pi sends no effort when thinking is off, which leaves the template's default;
-            // "none" turns thinking off.
+            // Pi sends no effort when thinking is off (leaving the template's default); "none" turns it off.
             "thinkingLevelMap": ["off": "none"],
             // Pi accepts only text and image; any other entry invalidates the whole file.
             "input": ctx.inputModalities.contains("image") ? ["text", "image"] : ["text"],
             "contextWindow": ctx.contextTokens,
-            // Pi lowers this per request to what its context leaves; the engine writes the
-            // same 32,768 allowance.
+            // Pi lowers this per request to what its context leaves; the engine writes the same 32,768 allowance.
             "maxTokens": 32_768,
         ]
         if ctx.laterSystem {
-            // Pi otherwise folds the system messages it adds as a session goes on into the
-            // first one, which changes the prompt from its start and makes the server read
-            // it all again.
+            // Pi otherwise folds the system messages it adds as a session goes on into the first one,
+            // changing the prompt from its start so the server re-reads it all.
             model["compat"] = ["supportsMidConvoSystemMessages": true]
         }
-        // Pi's free-form sampling defaults, merged into every request. The card's thinking-off
-        // set rides beside them so no-think turns can use different values (Pi's level key is
-        // "off"; Splash's effort name is "none").
-        var sampling: [String: Any] = [
-            "temperature": decimal(ctx.sampling.temperature),
-            "top_p": decimal(ctx.sampling.topP),
-            "top_k": ctx.sampling.topK,
-            "presence_penalty": decimal(ctx.sampling.presencePenalty),
-            "min_p": decimal(ctx.sampling.minP),
-        ]
-        if let seed = ctx.sampling.seed { sampling["seed"] = seed }
-        model["samplingParams"] = sampling
+        // Pi's free-form sampling defaults, merged into every request. The card's thinking-off set rides
+        // beside them so no-think turns can use different values (Pi's level key is "off"; Splash's is "none").
+        model["samplingParams"] = samplingBody(ctx.sampling)
         if let off = ctx.offSampling {
-            model["samplingParamsByThinkingLevel"] = [
-                "off": [
-                    "temperature": decimal(off.temperature),
-                    "top_p": decimal(off.topP),
-                    "top_k": off.topK,
-                    "presence_penalty": decimal(off.presencePenalty),
-                    "min_p": decimal(off.minP),
-                ]
-            ]
+            model["samplingParamsByThinkingLevel"] = ["off": samplingBody(off)]
         }
         let root: [String: Any] = [
             "providers": [

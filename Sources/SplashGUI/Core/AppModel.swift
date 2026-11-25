@@ -209,8 +209,8 @@ final class AppModel: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var pollTick = 0
     private var logTimer: Timer?
-    // Session logging (spec-logging-proxy). When the serve is fronted, the proxy holds the
-    // PUBLIC port and the engine runs on `frontedEnginePort`; status polling goes direct.
+    // Session logging. When the serve is fronted, the proxy holds the PUBLIC port and the
+    // engine runs on `frontedEnginePort`; status polling goes direct.
     let sessionLog = SessionLog()
     let performanceLog = PerformanceLog()
     @Published var frontedEnginePort: Int?
@@ -218,9 +218,9 @@ final class AppModel: ObservableObject {
     // The Logging tab's "applies on next Start" hint: what the running serve was started with.
     @Published var launchedLoggingEnabled = false
 
-    // Pure fronting rule (harness-pinned): front only when logging is on AND the app is
-    // launching the serve itself onto a picked free internal port. An adopted external
-    // serve never gets fronted — its port is already bound by someone else.
+    // Pure fronting rule: front only when logging is on AND the app is launching the serve
+    // itself onto a picked free internal port. An adopted external serve never gets fronted —
+    // its port is already bound by someone else.
     nonisolated static func frontingPlan(enabled: Bool, adopted: Bool, pickedInternalPort: Int?)
         -> (front: Bool, enginePort: Int?) {
         guard enabled, !adopted, let p = pickedInternalPort else { return (false, nil) }
@@ -343,13 +343,13 @@ final class AppModel: ObservableObject {
         guard probe.open, let pid = probe.pid else { return false }
         guard canStart else { return false }
         adoptedPID = pid
-        AppModel.serverKillPID = pid
         launchedRunConfig = config.run
         server.note("- attached to existing splash on port \(config.run.port) (pid \(pid))")
         if config.loggingEnabled {
             server.note("- session logging inactive while attached to an externally started serve")
         }
-        server.spawnWatchdog(serverPID: pid, appPID: Int(ProcessInfo.processInfo.processIdentifier))
+        // Never arm a kill path or watchdog for a server we did not launch: the user owns
+        // it, and killing it on app quit/stop/restart would reach past the app's own serve.
         phase = await client.ready() ? .ready : .starting
         startPolling()
         return true
@@ -463,11 +463,7 @@ final class AppModel: ObservableObject {
     // rewrite would clobber numbers the user tuned for this model.
     func applyCardOffSampling() {
         guard let e = catalogEntry else { return }
-        config.sampling.temperature = e.cardOffTemperature
-        config.sampling.topP = e.cardOffTopP
-        config.sampling.topK = e.cardOffTopK
-        config.sampling.presencePenalty = e.cardOffPresencePenalty
-        config.sampling.minP = e.cardOffMinP
+        config.sampling.applyCardOff(e)
     }
 
     // The context limit to write into client configs: the window Splash actually granted while
@@ -504,11 +500,7 @@ final class AppModel: ObservableObject {
         let apiName = config.run.servedModelName.isEmpty ? config.run.modelID : config.run.servedModelName
         let off: SamplingDefaults? = catalogEntry.map { e in
             var s = SamplingDefaults()
-            s.temperature = e.cardOffTemperature
-            s.topP = e.cardOffTopP
-            s.topK = e.cardOffTopK
-            s.presencePenalty = e.cardOffPresencePenalty
-            s.minP = e.cardOffMinP
+            s.applyCardOff(e)
             return s
         }
         let ctx = ClientConfigContext(client: client, modelID: apiName,
@@ -517,7 +509,7 @@ final class AppModel: ObservableObject {
                                       inputModalities: modalities,
                                       sampling: config.sampling,
                                       offSampling: off,
-                                      efforts: catalogEntry?.supportedEfforts ?? CatalogModel.allEfforts,
+                                      efforts: supportedEfforts,
                                       laterSystem: status?.rendersLaterSystem ?? false)
         return ClientConfigs.text(for: ctx)
     }
@@ -607,11 +599,11 @@ final class AppModel: ObservableObject {
         server.note("- start blocked: \(message)")
     }
 
-    // Which engine build start() installs, as a pure decision the harness can pin: the custom
-    // pin applies only in .custom (complete fields install regardless of the update toggle;
-    // partial fields keep the pre-picker pinned behavior), .pinned never sees the override
-    // fields, and .latest keeps the installed engine on a failed check — the compiled-in pin
-    // would silently DOWNGRADE — while nothing-installed falls back to the compiled pin.
+    // Which engine build start() installs, as a pure decision: the custom pin applies only
+    // in .custom (complete fields install regardless of the update toggle; partial fields keep
+    // the pre-picker pinned behavior), .pinned never sees the override fields, and .latest
+    // keeps the installed engine on a failed check — the compiled-in pin would silently
+    // DOWNGRADE — while nothing-installed falls back to the compiled pin.
     // `externalVersion` (Homebrew, if present) satisfies .pinned/.latest without a download
     // when it is at or above the wanted build; .homebrew takes it at ANY version (that is the
     // point: brew can lag the pin) and falls back to pinned behavior when brew is absent.
@@ -677,7 +669,7 @@ final class AppModel: ObservableObject {
             }
             let installed = EngineInstaller.isInstalled
             // The resolver is only consulted in latest mode; the mode table itself is pure
-            // (enginePlan) so the harness can pin it.
+            // (enginePlan).
             var resolved: EnginePin?
             if case .latest = self.config.engineMode { resolved = await EngineResolver.latest() }
             let externalVersion = EngineInstaller.externalEngineVersion()
@@ -779,22 +771,15 @@ final class AppModel: ObservableObject {
         launchedLoggingEnabled = false
         phase = .stopping
         launchedRunConfig = nil
-        if let pid = adoptedPID {
-            kill(Int32(pid), SIGTERM)
-            Task { @MainActor in
-                for _ in 0..<24 {
-                    if kill(Int32(pid), 0) != 0 { break }
-                    try? await Task.sleep(nanoseconds: 250_000_000)
-                }
-                if kill(Int32(pid), 0) == 0 { kill(Int32(pid), SIGKILL) }
-                self.adoptedPID = nil
-                AppModel.serverKillPID = nil
-                self.phase = .stopped
-                self.status = nil
-                self.draftAcceptance = nil
-                self.effectiveModel = nil
-                self.currentStage = nil
-            }
+        if adoptedPID != nil {
+            // Adopted servers belong to the user — detach and leave them running.
+            adoptedPID = nil
+            AppModel.serverKillPID = nil
+            phase = .stopped
+            status = nil
+            draftAcceptance = nil
+            effectiveModel = nil
+            currentStage = nil
             return
         }
         server.stop()

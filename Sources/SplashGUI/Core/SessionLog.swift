@@ -44,7 +44,6 @@ nonisolated struct SessionRecord: Codable {
 final class SessionLog: @unchecked Sendable {
     let dir: URL
     private let queue = DispatchQueue(label: "splashgui.sessionlog")
-    private let iso = ISO8601DateFormatter()
     var lastWriteError: String?
 
     init(dir: URL? = nil) {
@@ -52,9 +51,7 @@ final class SessionLog: @unchecked Sendable {
     }
 
     nonisolated static func dayFileName(_ date: Date) -> String {
-        let c = Calendar(identifier: .gregorian)
-        let d = c.dateComponents([.year, .month, .day], from: date)
-        return String(format: "%04d-%02d-%02d.jsonl", d.year ?? 1970, d.month ?? 1, d.day ?? 1)
+        JSONLStore.dayFileName(date)
     }
 
     // One JSON object per line; Dates ride as ISO-8601 strings so jq/python read them.
@@ -78,15 +75,7 @@ final class SessionLog: @unchecked Sendable {
         }
         queue.async {
             do {
-                try FileManager.default.createDirectory(at: self.dir, withIntermediateDirectories: true)
-                let url = self.dir.appendingPathComponent(Self.dayFileName(record.tsStart))
-                if !FileManager.default.fileExists(atPath: url.path) {
-                    FileManager.default.createFile(atPath: url.path, contents: nil)
-                }
-                let h = try FileHandle(forWritingTo: url)
-                defer { try? h.close() }
-                h.seekToEndOfFile()
-                h.write(Data(line.utf8))
+                try JSONLStore(dir: self.dir).appendLine(line, ts: record.tsStart)
                 self.lastWriteError = nil
             } catch {
                 // Logging must never break forwarding; the failure is surfaced in the tab.
@@ -99,24 +88,10 @@ final class SessionLog: @unchecked Sendable {
     // alone — never delete what we can't name.
     @discardableResult
     static func purge(dir: URL, retentionDays: Int, now: Date = Date()) -> [String] {
-        guard retentionDays > 0,
-              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
-        let cutoffDay = dayFileName(Calendar(identifier: .gregorian)
-            .date(byAdding: .day, value: -retentionDays, to: now) ?? now)
-        var removed: [String] = []
-        for n in names where n.hasSuffix(".jsonl") {
-            let day = String(n.dropLast(".jsonl".count))
-            let c = Array(day)
-            guard c.count == 10, c[4] == "-", c[7] == "-",
-                  [0, 1, 2, 3, 5, 6, 8, 9].allSatisfy({ c[$0].isNumber }),
-                  day < cutoffDay else { continue }
-            try? FileManager.default.removeItem(at: dir.appendingPathComponent(n))
-            removed.append(n)
-        }
-        return removed
+        JSONLStore.purge(dir: dir, retentionDays: retentionDays, now: now)
     }
 
-    // Newest-last: the tail of today's file (falling back to the newest file present).
+    // Newest-first: the tail of today's file (falling back to the newest file present).
     static func tail(dir: URL, limit: Int, now: Date = Date()) -> [SessionRecord] {
         let fm = FileManager.default
         var url = dir.appendingPathComponent(dayFileName(now))
@@ -135,18 +110,11 @@ final class SessionLog: @unchecked Sendable {
     struct Stats { var sessionsToday = 0; var totalBytes = 0; var fileCount = 0 }
 
     static func stats(dir: URL, now: Date = Date()) -> Stats {
-        let fm = FileManager.default
+        let (today, totalBytes, fileCount) = JSONLStore(dir: dir).stats(now: now)
         var s = Stats()
-        guard let names = (try? fm.contentsOfDirectory(atPath: dir.path))?
-                .filter({ $0.hasSuffix(".jsonl") }).sorted() else { return s }
-        s.fileCount = names.count
-        for n in names {
-            let u = dir.appendingPathComponent(n)
-            s.totalBytes += (try? u.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            if n == dayFileName(now), let data = try? Data(contentsOf: u) {
-                s.sessionsToday = data.filter { $0 == UInt8(ascii: "\n") }.count
-            }
-        }
+        s.sessionsToday = today
+        s.totalBytes = totalBytes
+        s.fileCount = fileCount
         return s
     }
 }

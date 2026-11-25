@@ -35,9 +35,8 @@ struct StageChipsRow: View {
     }
 }
 
-// The server control row lives in the window toolbar (title-bar strip), so it works from every
-// tab. Was the Run-tab mode bar until 2026-10-15; the blank hidden-titlebar strip above it made
-// the old placement read as double-height chrome.
+// The server control row lives in the window toolbar (title-bar strip): it owns the
+// title-bar strip so it works from every tab.
 struct ServerToolbarControls: View {
     @EnvironmentObject var model: AppModel
 
@@ -59,10 +58,9 @@ struct ServerToolbarControls: View {
                     .font(.system(.body, design: .monospaced))
                     .frame(width: 52)
                     .foregroundStyle(model.portValid ? Color.primary : Color.red)
-                    .help("HTTP port of the server. Splash's own default is 8000; the app uses 8095. Change if something else owns the port. Editable while running; an edit is a pending change for Apply & Restart.")
+                    .help("HTTP port of the server. Splash's own default is 8000; the app uses \(RunConfig.defaultPort). Change if something else owns the port. Editable while running; an edit is a pending change for Apply & Restart.")
                 Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(endpoint, forType: .string)
+                    copyToClipboard(endpoint)
                 } label: {
                     Image(systemName: "doc.on.doc")
                 }
@@ -89,10 +87,7 @@ struct ServerToolbarControls: View {
     // The toolbar host follows the (possibly edited) toggle, the way the port field follows
     // the edited port: the LAN address once "Serve on LAN" is on, loopback otherwise.
     private var endpointHost: String {
-        if model.config.run.lanAccess {
-            return MachineInfo.lanIPv4Address ?? "0.0.0.0"
-        }
-        return "127.0.0.1"
+        return MachineInfo.effectiveHost(lanEnabled: model.config.run.lanAccess)
     }
 
     private var endpoint: String { "http://" + endpointHost + ":" + String(model.config.run.port) }
@@ -182,26 +177,17 @@ struct SliderNumberField: View {
     let range: ClosedRange<Double>
     var step: Double = 0.05
     var digits: Int = 2
-    var trailing: String? = nil
-    var labelWidth: CGFloat? = nil
 
     var body: some View {
         HStack(spacing: 10) {
             Text(label)
                 .lineLimit(1)
-                .frame(width: labelWidth, alignment: .leading)
             Slider(value: clampedBinding, in: range)
             TextField("", value: clampedBinding, format: .number.precision(.fractionLength(digits)))
                 .labelsHidden()
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 70)
                 .monospacedDigit()
-            if let trailing {
-                Text(trailing)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
         }
         .help(helpText)
     }

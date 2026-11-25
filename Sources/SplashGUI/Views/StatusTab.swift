@@ -34,7 +34,7 @@ struct StatusTab: View {
                              help: "Inter-token latency for the slowest 5% of gaps between generated tokens.")
                         Card("Reused tokens", compactTokens(snap.reusedTokens),
                              help: "Prompt tokens served from the prefix cache instead of being read again, since the server started. Exact count: \(snap.reusedTokens.map { $0.formatted(.number) } ?? "–").")
-                        Card("GDN state", bytesText(snap.stateBytes), note: "\(snap.stateEntries ?? 0) entries",
+                        Card("GDN state", MachineInfo.bytesText(snap.stateBytes), note: "\(snap.stateEntries ?? 0) entries",
                              help: "Memory held by cached GDN states, the running state of the model's linear-attention layers, and how many are kept.")
                         Card("Scheduler", schedulerTotal(snap), note: schedulerText(snap),
                              help: "Total requests in the scheduler: the breakdown below counts those waiting, reading their prompt and generating right now.")
@@ -151,13 +151,6 @@ struct StatusTab: View {
 
     private func pctText(_ v: Double?) -> String? {
         v.map { String(format: "%.1f%%", $0 * 100) }
-    }
-
-    private func bytesText(_ v: Int?) -> String {
-        guard let v else { return "–" }
-        let gb = Double(v) / 1_073_741_824
-        if gb >= 1 { return String(format: "%.2f GB", gb) }
-        return String(format: "%.0f MB", Double(v) / 1_048_576)
     }
 
     // The card's big slot is the total; the breakdown lives in the note line like every other

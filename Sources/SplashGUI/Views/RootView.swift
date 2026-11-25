@@ -7,7 +7,7 @@ struct SplashGUIApp: App {
     init() {
         if CommandLine.arguments.contains("--install-engine") {
             let args = CommandLine.arguments
-            var port = 8095
+            var port = RunConfig.defaultPort
             if let i = args.firstIndex(of: "--port"), i + 1 < args.count, let p = Int(args[i + 1]) {
                 port = p
             }
@@ -89,11 +89,11 @@ struct RootView: View {
         .frame(minWidth: 1040, minHeight: 620)
     }
 
-    // The spec §2 fallback. A `.toolbar` sizes its items to content, so the context slot's
-    // `maxWidth: .infinity` never stretched: the row collapsed, the chips clipped and the
-    // endpoint wrapped over the field. This bar owns the hidden title-bar strip instead, with
-    // the traffic-light gutter reserved on the left and the rest of the width given to the
-    // controls. `WindowDragArea` keeps the strip draggable like a real title bar.
+    // A `.toolbar` sizes its items to content, so the context slot's `maxWidth: .infinity`
+    // never stretched: the row collapsed, the chips clipped and the endpoint wrapped over the
+    // field. This bar owns the title-bar strip instead, with the traffic-light gutter reserved
+    // on the left and the rest of the width given to the controls. `WindowDragArea` keeps the
+    // strip draggable like a real title bar.
     private var titleBar: some View {
         HStack(spacing: 0) {
             // Traffic lights + the sidebar toggle live in the strip over the 180pt sidebar;
@@ -137,7 +137,7 @@ struct RootView: View {
     private var phaseLabel: String {
         switch model.phase {
         case .stopped:
-            // A start failure stays on the footer until the next Start (spec §3).
+            // A start failure stays on the footer until the next Start.
             if let err = model.lastError { return "Stopped: \(err)" }
             return "Stopped"
         case .starting: return "Starting…"
@@ -147,8 +147,7 @@ struct RootView: View {
             if let launched = model.launchedRunConfig {
                 // A LAN bind still answers loopback; show the LAN address because that's the
                 // one worth reading here, falling back to loopback while none is leased.
-                let host = launched.lanAccess
-                    ? (MachineInfo.lanIPv4Address ?? "127.0.0.1") : "127.0.0.1"
+                let host = MachineInfo.effectiveHost(lanEnabled: launched.lanAccess)
                 return "Ready · \(m) on " + host + ":" + String(launched.port)
                     + (model.frontedEnginePort != nil ? " · logging" : "")
             }

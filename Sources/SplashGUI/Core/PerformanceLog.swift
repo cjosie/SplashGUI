@@ -34,7 +34,6 @@ nonisolated struct PerformanceSample: Codable {
 final class PerformanceLog: @unchecked Sendable {
     let dir: URL
     private let queue = DispatchQueue(label: "splashgui.performancelog")
-    private let iso = ISO8601DateFormatter()
     var lastWriteError: String?
 
     init(dir: URL? = nil) {
@@ -67,15 +66,7 @@ final class PerformanceLog: @unchecked Sendable {
         }
         queue.async {
             do {
-                try FileManager.default.createDirectory(at: self.dir, withIntermediateDirectories: true)
-                let url = self.dir.appendingPathComponent(SessionLog.dayFileName(sample.ts))
-                if !FileManager.default.fileExists(atPath: url.path) {
-                    FileManager.default.createFile(atPath: url.path, contents: nil)
-                }
-                let h = try FileHandle(forWritingTo: url)
-                defer { try? h.close() }
-                h.seekToEndOfFile()
-                h.write(Data(line.utf8))
+                try JSONLStore(dir: self.dir).appendLine(line, ts: sample.ts)
                 self.lastWriteError = nil
             } catch {
                 self.lastWriteError = "\(error)"
@@ -86,18 +77,11 @@ final class PerformanceLog: @unchecked Sendable {
     struct Stats { var samplesToday = 0; var totalBytes = 0; var fileCount = 0 }
 
     static func stats(dir: URL, now: Date = Date()) -> Stats {
-        let fm = FileManager.default
+        let (today, totalBytes, fileCount) = JSONLStore(dir: dir).stats(now: now)
         var s = Stats()
-        guard let names = (try? fm.contentsOfDirectory(atPath: dir.path))?
-                .filter({ $0.hasSuffix(".jsonl") }).sorted() else { return s }
-        s.fileCount = names.count
-        for n in names {
-            let u = dir.appendingPathComponent(n)
-            s.totalBytes += (try? u.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            if n == SessionLog.dayFileName(now), let data = try? Data(contentsOf: u) {
-                s.samplesToday = data.filter { $0 == UInt8(ascii: "\n") }.count
-            }
-        }
+        s.samplesToday = today
+        s.totalBytes = totalBytes
+        s.fileCount = fileCount
         return s
     }
 

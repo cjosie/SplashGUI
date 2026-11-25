@@ -1,14 +1,11 @@
 #!/usr/bin/env zsh
-# Headless regression for the config store: profile swap, schema migration, model cards.
-# Drives the real AppModel (no GUI) against a temp fixture at the real config.json path,
-# because HOME does not redirect applicationSupportDirectory. Refuses to run while the app
-# is up, and restores the original config.json whatever happens.
+# Headless regression for the config store; drives the real AppModel against a temp fixture at the
+# real config.json path (HOME does not redirect applicationSupportDirectory), restoring the original config.json.
 set -e
 cd "$(dirname "$0")"
 CORE="../../Sources/SplashGUI/Core"
 CFG="$HOME/Library/Application Support/SplashGUI/config.json"
-# AppModel auto-starts the server on init when config.startOnLaunch is on; never let the
-# harness spawn a real serve.
+# AppModel auto-starts the server on init when startOnLaunch is on; never spawn a real serve.
 export SPLASHGUI_TEST=1
 
 if pgrep -f "SplashGUI.app/Contents/MacOS/SplashGUI" >/dev/null; then
@@ -20,8 +17,7 @@ backup=$(mktemp)
 cp "$CFG" "$backup"
 trap 'cp "$backup" "$CFG"; rm -f "$backup"; print "config.json restored"' EXIT
 
-# A pre-profiles (schemaVersion 2) config: no modelProfiles key, and typed values the assertions
-# below read back — proof the file decoded and migrated rather than falling back to factory.
+# Pre-profiles schemaVersion 2 fixture: no modelProfiles key; typed values the assertions read back.
 python3 - <<'EOF'
 import json, os
 p = os.path.expanduser("~/Library/Application Support/SplashGUI/config.json")
@@ -29,11 +25,8 @@ c = json.load(open(p))
 c['run']['schemaVersion'] = 2
 c['run']['kvFormat'] = 'bf16'
 c['run']['maxContext'] = '100K'
-# Pin the starting model: the assertions below assume the current model is A (IQ3_XXS),
-# so the fixture must not inherit whatever model the live config happens to select.
+# Pin the starting model (A, IQ3_XXS) and the pre-v5/v6 state; a live config may carry post-migration values.
 c['run']['modelID'] = 'unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS'
-# Pin the pre-v5/v6 state the migration assertions read back: a live config may already carry
-# a post-migration value (or a legacy one), which would make those checks machine-dependent.
 c['run']['maxCacheDisk'] = '0'
 c['run'].pop('idleRelease', None)
 c['run'].pop('persistentCache', None)
@@ -47,7 +40,7 @@ EOF
 swiftc -swift-version 5 -o /tmp/splashgui-profiletest \
   "$CORE"/AppConfig.swift "$CORE"/AppModel.swift "$CORE"/ClientConfigs.swift \
   "$CORE"/EngineInstaller.swift "$CORE"/EngineResolver.swift \
-  "$CORE"/MachineInfo.swift "$CORE"/SessionLog.swift "$CORE"/SessionProxy.swift \
+  "$CORE"/MachineInfo.swift "$CORE"/SessionLog.swift "$CORE"/SessionProxy.swift "$CORE"/JSONLStore.swift \
   "$CORE"/PerformanceLog.swift "$CORE"/SplashClient.swift "$CORE"/SplashServer.swift main.swift
 
 /tmp/splashgui-profiletest

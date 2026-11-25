@@ -2,10 +2,9 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-// Session logging controls and the live tail (scratch/spec-logging-proxy.md). Logging is
-// opt-in and full-fidelity: whole prompts, replies, reasoning and tool calls as JSONL,
-// with day-file retention as the only cap. The proxy fronts the public port, so client
-// configs never change.
+// Session logging controls and the live tail. Logging is opt-in and full-fidelity: whole
+// prompts, replies, reasoning and tool calls as JSONL, with day-file retention as the only
+// cap. The proxy fronts the public port, so client configs never change.
 struct LoggingTab: View {
     @EnvironmentObject var model: AppModel
     @State private var stats = SessionLog.Stats()
@@ -48,7 +47,7 @@ struct LoggingTab: View {
                 }
                 .frame(maxWidth: 240, alignment: .leading)
                 HStack(spacing: 16) {
-                    Text("\(String(stats.sessionsToday)) sessions today · \(bytes(stats.totalBytes)) in \(String(stats.fileCount)) file(s)")
+                    Text("\(String(stats.sessionsToday)) sessions today · \(MachineInfo.bytesText(stats.totalBytes)) in \(String(stats.fileCount)) file(s)")
                     Button("Open log folder") { NSWorkspace.shared.open(model.sessionLog.dir) }
                     Button("Refresh") { load() }
                 }
@@ -79,7 +78,7 @@ struct LoggingTab: View {
                     Spacer()
                 }
                 HStack(spacing: 16) {
-                    Text("\(String(perfStats.samplesToday)) samples today · \(bytes(perfStats.totalBytes)) in \(String(perfStats.fileCount)) file(s)")
+                    Text("\(String(perfStats.samplesToday)) samples today · \(MachineInfo.bytesText(perfStats.totalBytes)) in \(String(perfStats.fileCount)) file(s)")
                     Button("Open folder") { NSWorkspace.shared.open(model.performanceLog.dir) }
                     Button("Export CSV…") { exportPerformanceCSV() }
                     Button("Refresh") { load() }
@@ -118,13 +117,6 @@ struct LoggingTab: View {
         return model.config.loggingEnabled
             ? "Armed: the next Start runs the serve behind the proxy."
             : "Off: the serve runs directly on port \(model.config.run.port)."
-    }
-
-    private func bytes(_ n: Int) -> String {
-        if n >= 1_000_000_000 { return String(format: "%.1f GB", Double(n) / 1e9) }
-        if n >= 1_000_000 { return String(format: "%.1f MB", Double(n) / 1e6) }
-        if n >= 1_000 { return "\(n / 1000) KB" }
-        return "\(n) B"
     }
 
     private func load() {

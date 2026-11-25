@@ -281,8 +281,20 @@ final class EngineInstaller: ObservableObject {
 
     // MARK: helpers
 
+    // The one payload naming rule: the release asset, the install dir and the resolver's
+    // expected file all share the same base.
+    static func payloadBaseName(version: String) -> String {
+        "splash-\(version)-arm64-macos26"
+    }
+
+    // The one "external engine at or above the pin → adopt" rule.
+    nonisolated static func shouldAdoptExternal(_ external: String?, wanted: String) -> Bool {
+        guard let external else { return false }
+        return versionOrder(external, wanted) != .orderedAscending
+    }
+
     static func dirName(for pin: EnginePin) -> String {
-        let base = "splash-\(pin.version)-arm64-macos26"
+        let base = payloadBaseName(version: pin.version)
         // An override URL can serve a different payload under a version the pinned release
         // already used; keying the dir by the URL keeps the two installs from sharing it.
         guard pin.url != defaultPin.url else { return base }
@@ -357,14 +369,13 @@ enum InstallError: LocalizedError {
 }
 
 extension EngineInstaller {
-    // Headless install for `SplashGUI --install-engine` — drives the same flow, pumps the
-    // main runloop so MainActor hops run, prints phase changes, exits 0/1.
+    // Headless install for `SplashGUI --install-engine` — drives the same flow and exits 0/1.
     static func runCLI(port: Int) -> Int32 {
         setbuf(stdout, nil)
         // Same preference as the GUI: a Homebrew engine at or above the pin is adopted
         // instead of downloading a duplicate payload.
         if let ext = externalEngineVersion(),
-           versionOrder(ext, defaultPin.version) != .orderedAscending {
+           shouldAdoptExternal(ext, wanted: defaultPin.version) {
             do {
                 try adoptExternalEngine()
                 print("adopted Homebrew engine \(ext) at \(externalEngineRoot.path)")
