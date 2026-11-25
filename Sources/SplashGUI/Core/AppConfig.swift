@@ -568,7 +568,7 @@ struct CatalogModel: Identifiable, Equatable {
     }
 
     // The catalog IS Splash's own suggested list (install/suggested-models.tsv as shipped by
-    // engine 1.7.2): same order (best first), same facts. The note line carries the tsv's
+    // engine 1.7.3): same order (best first), same facts. The note line carries the tsv's
     // MEMORY / SIZE / ABOUT columns verbatim in meaning — SIZE is the vendor's download figure
     // including the vision projector and DFlash2 draft (the auto-profile's weight basis), and
     // MEMORY feeds fitsThisMac directly, so note and the too-large warning agree by
@@ -618,11 +618,14 @@ struct CatalogModel: Identifiable, Equatable {
                      note: "for 36 GB Macs · 18 GB download · Text only",
                      approxBytes: 18_000_000_000, memoryGB: 36),
         CatalogModel(id: "unsloth/Inkling-2-Mini-GGUF:UD-Q4_K_M", label: "Inkling-2-Mini Q4_K_M",
-                     note: "for 36 GB Macs · 18 GB download · Text only",
+                     note: "for 36 GB Macs · 18 GB download · Agentic all-rounder",
                      approxBytes: 18_000_000_000, memoryGB: 36),
         CatalogModel(id: "mlx-community/Inkling-2-Mini-4bit", label: "Inkling-2-Mini MLX 4-bit",
-                     note: "for 36 GB Macs · 18 GB download · Text only",
+                     note: "for 36 GB Macs · 18 GB download · Agentic all-rounder",
                      approxBytes: 18_000_000_000, memoryGB: 36),
+        CatalogModel(id: "unsloth/Inkling-2-Mini-GGUF:UD-IQ3_XXS", label: "Inkling-2-Mini IQ3_XXS",
+                     note: "for 24 GB Macs · 13 GB download · Agentic all-rounder",
+                     approxBytes: 13_000_000_000, memoryGB: 24),
         CatalogModel(id: "unsloth/Ornith-1.5-122B-GGUF:UD-Q4_K_XL", label: "Ornith-1.5-122B Q4_K_XL",
                      note: "for 128 GB Macs · 82 GB download · Largest model",
                      approxBytes: 82_000_000_000, memoryGB: 128),

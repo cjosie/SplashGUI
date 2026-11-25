@@ -49,8 +49,9 @@ The picker ships Splash's own list. Download sizes are the engine's own figures 
 | Qwen3.8-Flash-Next MLX 4-bit | 113 GB | 96 GB | Most capable |
 | Flint Q4_K_XL (GGUF) | 26 GB | 48 GB | Text only |
 | Flint MLX 3-4bit | 18 GB | 36 GB | Text only |
-| Inkling-2-Mini Q4_K_M (GGUF) | 18 GB | 36 GB | Text only |
-| Inkling-2-Mini MLX 4-bit | 18 GB | 36 GB | Text only |
+| Inkling-2-Mini Q4_K_M (GGUF) | 18 GB | 36 GB | Agentic all-rounder |
+| Inkling-2-Mini MLX 4-bit | 18 GB | 36 GB | Agentic all-rounder |
+| Inkling-2-Mini IQ3_XXS (GGUF) | 13 GB | 24 GB | Agentic all-rounder |
 | Ornith-1.5-122B Q4_K_XL (GGUF) | 82 GB | 128 GB | Largest model |
 | Ornith-1.5-122B MLX 4-bit | 71 GB | 128 GB | Largest model |
 | Ternary-Bonsai 2 27B PQ2_0 | 12 GB | 24 GB | Smallest download |
