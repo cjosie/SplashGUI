@@ -15,3 +15,6 @@ build/
 
 # scratch folder
 scratch/
+
+# Session tooling
+.pi/

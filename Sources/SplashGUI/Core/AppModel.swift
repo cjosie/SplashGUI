@@ -241,7 +241,6 @@ final class AppModel: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
         ) { _ in
-            AppModel.isQuitting = true
             if let pid = AppModel.serverKillPID {
                 kill(Int32(pid), SIGTERM)
                 var waited = 0
@@ -251,20 +250,6 @@ final class AppModel: ObservableObject {
                     waited += 1
                 }
                 if kill(Int32(pid), 0) == 0 { kill(Int32(pid), SIGKILL) }
-            }
-        }
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification, object: nil, queue: nil
-        ) { _ in
-            guard !AppModel.isQuitting else { return }
-            DispatchQueue.main.async {
-                guard !AppModel.isQuitting else { return }
-                let visibleWindows = NSApp.windows.filter {
-                    $0.isVisible && !($0 is NSPanel) && $0.frame.width > 0
-                }
-                if visibleWindows.isEmpty {
-                    NSApp.terminate(nil)
-                }
             }
         }
         Task { @MainActor in
@@ -334,7 +319,6 @@ final class AppModel: ObservableObject {
 
     nonisolated(unsafe) static var serverKillPID: Int?
 
-    nonisolated(unsafe) static var isQuitting = false
 
     @discardableResult
     private func adoptExistingServer() async -> Bool {

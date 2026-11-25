@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct SplashGUIApp: App {
     @StateObject private var model = AppModel()
+    @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
 
     init() {
         if CommandLine.arguments.contains("--install-engine") {

@@ -20,7 +20,7 @@ struct RunTab: View {
 
             SettingsSection("Engine") {
                 Toggle("Start server on app launch", isOn: $model.config.startOnLaunch)
-                    .help("Launch SplashGUI and it serves the saved model on the saved port, no click needed. A server already on the port is adopted instead of double-launched; engine updates (per the source setting below) install first. Quitting stops the server.")
+                    .help("Launch SplashGUI and it serves the saved model on the saved port, no click needed. A server already on the port is adopted instead of double-launched; engine updates (per the source setting below) install first. Closing the window leaves the server running; quitting stops it.")
                 HStack(spacing: 6) {
                     Text("Engine source")
                         .fixedSize(horizontal: true, vertical: false)
