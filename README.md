@@ -18,7 +18,9 @@ Logging tab: Toggle logging local sessions, LAN sessions, and choose retention. 
 Provider tab: Temperature, top-p/k settings, and other on-the-fly adjustable ones. Toggle LAN IP on/off and it'll flip from filling the localhost or LAN IP, making it easy to paste over to LAN machines without manually correcting the IP. The json template updates with the settings you pick here and on run, for easy copy-pasting into various service configs (I mostly use OpenCode V2 and Pi). 
 
 ![status tab, displaying token per second and other stats, plus a chart graphing the main ones](images/Status.png)
-Status tab: monitoring. Shows time to first token, prefill, decode, draft acceptance, cache hit, etc. Graphs prefill tok/s, decode tok/s, cache hit percentage, and draft accept percentage. Now shows total RAM and Disk states up top, and then the Splash memory budget details below. Cleaned up the lower section in anticipation of adding hardware monitoring.
+Status tab: monitoring. Shows time to first token, prefill, decode, draft acceptance, cache hit, etc. Graphs prefill tok/s, decode tok/s, cache hit percentage, and draft accept percentage. Now shows total RAM and Disk states up top, and then the Splash memory budget details below. 
+
+Massive shout to macmon: [macmon](https://github.com/vladkens/macmon). It’s an MIT licensed, sudo-less [name]top type utility. It has a serve function + can be easily ran as a child process and piped back. SplashGUI can now use it to show hardware stats on the Status page. It can pull it from GitHub itself, or use a homebrew install same as for the Splash engine itself. It requires a one-time opt-in on the Status page, since it’s a separate utility that’ll be installed or polled on your computer. 
 
 ## Requirements
 
