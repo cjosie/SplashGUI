@@ -75,11 +75,17 @@ enum Macmon {
     static func binaryVersion(at path: String) -> String? {
         guard fm.isExecutableFile(atPath: path),
               let out = try? runCapturing(path, ["--version"]) else { return nil }
-        // Tolerate "0.12.1", "macmon 0.12.1", "macmon v0.12.1 (commit …)".
-        guard let tok = out.split(separator: " ").map(String.init).last(where: { $0.first?.isNumber == true })
-        else { return nil }
-        let v = tok.prefix { $0.isNumber || $0 == "." }
-        return v.isEmpty ? nil : String(v)
+        // Tolerate "0.12.1", "macmon 0.12.1", "macmon v0.12.1 (commit 0a1b2c)": accept the
+        // first token with a dotted-numeric core (optional "v" prefix). A bare leading digit
+        // is not enough — the commit-hash token in that last example would yield "0".
+        for tok in out.split(separator: " ") {
+            let core = tok.hasPrefix("v") ? tok.dropFirst() : tok
+            let v = core.prefix { $0.isNumber || $0 == "." }
+            if v.first?.isNumber == true, v.last?.isNumber == true, v.contains(".") {
+                return String(v)
+            }
+        }
+        return nil
     }
 
     // The one preference rule (sampler and status UI both use it): Homebrew at/above the pin,
@@ -166,8 +172,9 @@ enum Macmon {
     // MARK: process helpers
 
     // Run an executable to completion capturing stdout (nil on non-zero exit). Short-lived
-    // probes only (`--version`); long-running streams use HardwareSampler.
-    static func runCapturing(_ exe: String, _ args: [String]) throws -> String {
+    // probes only (`--version`); long-running streams use HardwareSampler. A child that never
+    // exits is killed after `timeout` — a broken binary must not wedge the caller's thread.
+    static func runCapturing(_ exe: String, _ args: [String], timeout: TimeInterval = 5) throws -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: exe)
         p.arguments = args
@@ -175,6 +182,19 @@ enum Macmon {
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice
         try p.run()
+        // Poll for exit before draining: probe output is a version string, far under the pipe
+        // buffer, so a child that never exits is a hang — not backpressure.
+        let deadline = Date().addingTimeInterval(timeout)
+        while p.isRunning {
+            if Date() >= deadline {
+                p.terminate()
+                let killDeadline = Date().addingTimeInterval(2)
+                while p.isRunning, Date() < killDeadline { usleep(20_000) }
+                if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+                break
+            }
+            usleep(20_000)
+        }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
         guard p.terminationStatus == 0 else { throw MacmonError.install("`\(exe)` exited with status \(p.terminationStatus).") }

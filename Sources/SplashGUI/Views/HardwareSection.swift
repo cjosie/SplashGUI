@@ -12,8 +12,10 @@ struct HardwareSection: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var sampler: HardwareSampler
     // Probed once per appearance: Macmon.resolve() spawns `macmon --version`, which must not
-    // ride the tab's per-second redraws.
+    // ride the tab's per-second redraws. Off-main (a hung binary must not freeze the tab),
+    // so the card shows a transient "checking" state until the probe lands.
     @State private var found: MacmonSource?
+    @State private var probed = false
 
     var body: some View {
         Group {
@@ -33,7 +35,10 @@ struct HardwareSection: View {
                 promptCard
             }
         }
-        .onAppear { found = Macmon.resolve() }
+        .task {
+            found = await Task.detached(priority: .userInitiated) { Macmon.resolve() }.value
+            probed = true
+        }
     }
 
     // MARK: states
@@ -43,13 +48,14 @@ struct HardwareSection: View {
     private var promptCard: some View {
         VStack(alignment: .leading, spacing: 4) {
             chrome(title: "Hardware stats",
-                   value: found == nil ? "not installed" : "off",
-                   note: (found.map { "macmon found: \($0.label)" }
-                       ?? "installs macmon \(Macmon.defaultPin.version) (MIT, ~1 MB) — or `brew install macmon`"),
+                   value: !probed ? "…" : found == nil ? "not installed" : "off",
+                   note: !probed ? "checking for macmon…"
+                       : (found.map { "macmon found: \($0.label)" }
+                           ?? "installs macmon \(Macmon.defaultPin.version) (MIT, ~1 MB) — or `brew install macmon`"),
                    help: "Package power, core clocks, GPU, temperatures and fans, read sudoless through macmon — the open-source Apple Silicon monitor (MIT licensed). Nothing is downloaded or launched until you press Enable; macmon then runs as a child process of this app only while enabled.")
             HStack(spacing: 8) {
                 Spacer()
-                Button(found == nil ? "Install & enable" : "Enable") {
+                Button(probed && found == nil ? "Install & enable" : "Enable") {
                     // The flip itself is the consent; AppModel's handler resolves first
                     // and downloads only when nothing is found.
                     model.config.hardwareStatsEnabled = true
@@ -164,7 +170,7 @@ struct HardwareSection: View {
         (max(10, sampler.axisPowerW) / 10).rounded(.up) * 10
     }
     private func clockNote(_ s: MacmonSample) -> String {
-        s.cpuTiers.map { "\($0.label) \($0.freqMhz)" }.joined(separator: " · ") + " MHz"
+        s.cpuTiers.map { "\($0.label) \($0.freqMhz) MHz" }.joined(separator: " · ")
     }
     private func hottest(_ s: MacmonSample) -> Double? {
         switch (s.temp.cpuTempAvg, s.temp.gpuTempAvg) {
@@ -201,7 +207,7 @@ struct HardwareSection: View {
             Text(note.isEmpty ? " " : note)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(1, reservesSpace: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)

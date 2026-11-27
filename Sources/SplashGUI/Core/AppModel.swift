@@ -261,7 +261,10 @@ final class AppModel: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
         ) { [weak self] _ in
-            Task { @MainActor in self?.hardware.stop() }
+            // Synchronous, like the engine kill below: a Task posted here may never run
+            // before the process exits, which would orphan macmon (and its retry loop
+            // could relaunch it after quit).
+            MainActor.assumeIsolated { self?.hardware.stop() }
             if let pid = AppModel.serverKillPID {
                 kill(Int32(pid), SIGTERM)
                 var waited = 0

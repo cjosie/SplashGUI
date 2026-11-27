@@ -163,6 +163,7 @@ final class HardwareSampler: ObservableObject {
     private var readTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
     private var stoppingByIntent = true
+    private var stopCount = 0
     private var retriesLeft = 0
     private var source: MacmonSource?
 
@@ -177,6 +178,9 @@ final class HardwareSampler: ObservableObject {
             state = .failed("macmon is not installed. Install it with `brew install macmon`, or let the app download the pinned copy.")
             return false
         }
+        // The retry budget refills only on a fresh (user-visible) start — launch() must not
+        // reset it, or a child that dies on launch respawns forever.
+        retriesLeft = maxRetries
         launch(src)
         return true
     }
@@ -184,8 +188,15 @@ final class HardwareSampler: ObservableObject {
     // The install entry point: downloads the pinned macmon when none is resolved, then
     // streams. Bind this ONLY to an explicit user control ("Install & enable hardware
     // stats"); never call it from launch, resume, or anything automatic.
+    private var installing = false
+
     func installAndStart(pin: MacmonPin = Macmon.defaultPin) async {
-        if process != nil { return }
+        // Mutual exclusion: two rapid toggles must not race two downloads through the one
+        // .staged directory (whose defer-cleanup would delete the other's tarball mid-move).
+        if process != nil || installing { return }
+        installing = true
+        defer { installing = false }
+        let epoch = stopCount
         if Macmon.resolve() == nil {
             state = .starting
             do { _ = try await Macmon.ensureInstalled(pin: pin) }
@@ -194,10 +205,18 @@ final class HardwareSampler: ObservableObject {
                 return
             }
         }
+        // The toggle can be flipped off while the download is in flight (stop() ran, and it
+        // bumped stopCount) — launching then would spawn a child the user just declined.
+        // But a newer toggle-on may already be running: only touch state if nothing did.
+        guard stopCount == epoch else {
+            if process == nil { state = .stopped }
+            return
+        }
         start()
     }
 
     func stop() {
+        stopCount += 1
         guard let p = process else { stoppingByIntent = true; state = .stopped; return }
         stoppingByIntent = true
         process = nil
@@ -244,7 +263,6 @@ final class HardwareSampler: ObservableObject {
 
     private func launch(_ src: MacmonSource) {
         source = src
-        retriesLeft = maxRetries
         state = .starting
 
         let p = Process()
@@ -273,11 +291,23 @@ final class HardwareSampler: ObservableObject {
         readTask = Task.detached(priority: .utility) { [weak self] in
             // Bind once so the MainActor hops below capture a constant, not the weak var.
             guard let sampler = self else { return }
+            var decodeFails = 0
             do {
                 for try await line in handle.bytes.lines {
                     guard let data = line.data(using: .utf8),
                           let sample = try? MacmonSample.decoder.decode(MacmonSample.self, from: data)
-                    else { continue }   // tolerate a stray non-JSON line; the schema test covers real breaks
+                    else {
+                        // A stray non-JSON line is tolerated; ~30 in a row means the schema
+                        // moved under us (a brew-upgraded macmon with renamed fields) — every
+                        // sample would vanish silently, so stop and say so.
+                        decodeFails += 1
+                        if decodeFails >= 30 {
+                            await MainActor.run { sampler.noteDecodeDrift(p) }
+                            break
+                        }
+                        continue
+                    }
+                    decodeFails = 0
                     let ok = await MainActor.run { () -> Bool in
                         guard sampler.process === p else { return false }
                         sampler.latest = sample
@@ -304,7 +334,7 @@ final class HardwareSampler: ObservableObject {
                     return
                 }
                 self.retriesLeft -= 1
-                let delay = Double(self.maxRetries - self.retriesLeft) * 2  // 2s, 4s, 8s
+                let delay = Double(self.maxRetries - self.retriesLeft) * 2  // 2s, 4s, 6s
                 self.retryTask = Task { @MainActor [weak self] in
                     try? await Task.sleep(nanoseconds: UInt64(delay * 1e9))
                     guard let self, !self.stoppingByIntent, self.process == nil else { return }
@@ -312,6 +342,20 @@ final class HardwareSampler: ObservableObject {
                 }
             }
         }
+    }
+}
+
+extension HardwareSampler {
+    // Schema drift (see the read loop): stop the child, do NOT retry — a relaunch of the
+    // same macmon would drift the same way. stoppingByIntent keeps the termination handler
+    // from treating this as a crash.
+    fileprivate func noteDecodeDrift(_ p: Process) {
+        guard process === p, !stoppingByIntent else { return }
+        stoppingByIntent = true
+        process = nil
+        readTask?.cancel(); readTask = nil
+        state = .failed("macmon output no longer decodes — its JSON format may have changed (a brew upgrade?). Check for a SplashGUI update.")
+        p.terminate()
     }
 }
 
