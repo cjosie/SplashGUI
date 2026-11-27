@@ -7,18 +7,18 @@ SplashGUI is only a frontend. The engine binary is downloaded from the upstream 
 ## Features
 The top bar is always present, and shows engine status (while loading) and context usage (once loaded). It has a prefill/decode block that'll flip green for whichever the model is currently doing, the server URL (and configurable port setting), the apply & restart button, and the start/stop button. There's 4 tabs with additional settings and information:
 ![SplashGUI run tab, showing main settings](images/Run.png)
-Run tab: Model picker, settings requiring a restart, default reasoning level, engine version settings. Now supports finding a Homebrew install of Splash, so it won't re-download the engine if you already installed it that way. 
+Run tab: Model picker, settings requiring a restart, default reasoning level, engine version settings. Now supports finding a Homebrew install of Splash, so it won't re-download the engine if you already installed it that way. Also added the option to clear the SSD cache (useful for performance testing, if you want to see raw prefill without cached data). 
 
 Toggling "Auto" will pick context, memory, SSD cache, and KV Cache quantization based on hardware/Splash engine defaults. Optional toggles to disable the splash web chat server and the vision heads (the latter will save a smidge of VRAM), host to LAN, skip the huggingface check, etc.
 
 ![logging tab, showing log options, exports, and a list of recent log events ](images/Logging.png)
-Logging tab: Toggle logging local sessions, LAN sessions, and choose retention. Separately, you can log the same #s from the Status tab, on 1, 5, or 10 second intervals. Both logging options emit json files, performance logging also has a CSV export option. Logging won't kick in until the server is restarted, as it uses a loopback proxy between the client and engine. 
+Logging tab: Toggle logging local sessions, LAN sessions, and choose retention. Separately, you can log the same performance numbers from the Status tab, on 1, 5, or 10 second intervals. Both logging options emit json files, performance logging also has a CSV export option. Logging won't kick in until the server is restarted, as it uses a loopback proxy between the client and engine. 
 
 ![provider tab, showing temperature and opencode/zed/etc json template settings](images/Provider.png)
 Provider tab: Temperature, top-p/k settings, and other on-the-fly adjustable ones. Toggle LAN IP on/off and it'll flip from filling the localhost or LAN IP, making it easy to paste over to LAN machines without manually correcting the IP. The json template updates with the settings you pick here and on run, for easy copy-pasting into various service configs (I mostly use OpenCode V2 and Pi). 
 
 ![status tab, displaying token per second and other stats, plus a chart graphing the main ones](images/Status.png)
-Status tab: monitoring. Shows time to first token, prefill, decode, draft acceptance, cache hit, etc. Graphs prefill tok/s, decode tok/s, cache hit percentage, and draft accept percentage. 
+Status tab: monitoring. Shows time to first token, prefill, decode, draft acceptance, cache hit, etc. Graphs prefill tok/s, decode tok/s, cache hit percentage, and draft accept percentage. Now shows total RAM and Disk states up top, and then the Splash memory budget details below. Cleaned up the lower section in anticipation of adding hardware monitoring.
 
 ## Requirements
 
@@ -116,8 +116,8 @@ scripts/bundle-app.sh --release
 scripts/release.sh                # tags, pushes, and creates the GitHub release
 ```
 
-## Built with
-This is a "vibe coded" project. Built with a combination of Claude Code and OpenCode. OpenCode models used include: DeepSeek V4.1 Flash, GLM 5.3/5.3 flash, a local instance of Qwen 3.8 Flash-Next, and Qwen 3.8-27B running in this app/splash itself, or LMStudio (with the splash engine) before this was working. 
+## AI Disclosure
+I use LLMs for code generation/research/assistance/etc. Built with a combination of Claude Code and (now mostly) open-weight models. Open models used include: DeepSeek V4.1 Flash, GLM 5.3/5.3 flash, Qwen 3.8 Flash-Next and 27B Dense, and Inkling 2 Mini.
 
 ## Contributing
 
