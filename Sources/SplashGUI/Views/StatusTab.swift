@@ -36,21 +36,35 @@ struct StatusTab: View {
                              help: "Total requests in the scheduler, split in the line below: queue waiting, prefill reading its prompt, decode generating.")
                     }
 
+                    HardwareSection(sampler: model.hardware)
+                        .environmentObject(model)
                 }
                 .padding(16)
             }
         } else {
-            VStack(spacing: 10) {
-                Image(systemName: "gauge")
-                    .font(.system(size: 34))
-                    .foregroundStyle(.secondary)
-                Text(statusText)
-                    .foregroundStyle(.secondary)
-                if let v = model.engineVersion {
-                    Text("engine \(v) installed at \(EngineInstaller.currentLink.path)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            // The idle page still gets the hardware row: what the Mac is doing while the
+            // engine sleeps is exactly the question the module answers.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(spacing: 10) {
+                        Image(systemName: "gauge")
+                            .font(.system(size: 34))
+                            .foregroundStyle(.secondary)
+                        Text(statusText)
+                            .foregroundStyle(.secondary)
+                        if let v = model.engineVersion {
+                            Text("engine \(v) installed at \(EngineInstaller.currentLink.path)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+
+                    HardwareSection(sampler: model.hardware)
+                        .environmentObject(model)
                 }
+                .padding(16)
             }
         }
     }
@@ -213,7 +227,8 @@ struct StatusTab: View {
                   extract: { $0.prefillTps }, format: { String(format: "%.0f", $0) }),
             .init(name: "Decode tok/s", color: .blue,
                   extract: { $0.decodeTps }, format: { String(format: "%.0f", $0) })
-        ])
+        ], stages: { $0.stage },
+           helpText: "Rolling window (8 min at 2s cadence) of /status samples taken only while the server is actively prefilling or decoding; idle periods leave gaps. Each line scales to the 90th percentile of its own values so bursts don't flatten the rest. The strip below shows request stages: orange prefill, green generation.")
     }
 
     private func maximaText(_ fiveMin: Double?, _ session: Double?) -> String {

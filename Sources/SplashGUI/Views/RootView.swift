@@ -17,6 +17,14 @@ struct SplashGUIApp: App {
         if CommandLine.arguments.contains("--auto-profile") {
             exit(runAutoProfileProbe())
         }
+        if CommandLine.arguments.contains("--macmon-probe") {
+            let args = CommandLine.arguments
+            var samples = 3
+            if let i = args.firstIndex(of: "--samples"), i + 1 < args.count, let n = Int(args[i + 1]) {
+                samples = n
+            }
+            exit(runMacmonProbe(samples: samples))
+        }
         if CommandLine.arguments.contains("--check-model") {
             setbuf(stdout, nil)
             let cfg = ConfigStore.shared.load()

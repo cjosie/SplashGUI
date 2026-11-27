@@ -409,6 +409,11 @@ struct AppConfig: Codable, Equatable {
     // in seconds and the poll ticks once a second; 1/5/10 are the offered choices.
     var performanceLoggingEnabled: Bool = false
     var performanceLogInterval: Int = 5
+    // Hardware stats (macmon module) — OFF by default and never auto-installed: flipping this
+    // true only ever comes from the Status tab's Enable/Install button, which is the consent
+    // action (see Macmon.swift's OPTIONAL MODULE rule). Launching with it true re-starts the
+    // sampler from an already-installed binary; it cannot download.
+    var hardwareStatsEnabled: Bool = false
 
     init() {}
 
@@ -422,6 +427,7 @@ struct AppConfig: Codable, Equatable {
         case startOnLaunch
         case loggingEnabled, loggingLanClients, loggingRetentionDays
         case performanceLoggingEnabled, performanceLogInterval
+        case hardwareStatsEnabled
     }
 
     init(from decoder: Decoder) throws {
@@ -445,6 +451,7 @@ struct AppConfig: Codable, Equatable {
         loggingRetentionDays = try c.decodeIfPresent(Int.self, forKey: .loggingRetentionDays) ?? 90
         performanceLoggingEnabled = try c.decodeIfPresent(Bool.self, forKey: .performanceLoggingEnabled) ?? false
         performanceLogInterval = try c.decodeIfPresent(Int.self, forKey: .performanceLogInterval) ?? 5
+        hardwareStatsEnabled = try c.decodeIfPresent(Bool.self, forKey: .hardwareStatsEnabled) ?? false
     }
 
     func enginePinOverride() -> EnginePin? {

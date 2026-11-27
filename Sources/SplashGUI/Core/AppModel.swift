@@ -16,6 +16,16 @@ final class AppModel: ObservableObject {
             ConfigStore.shared.save(config)
             // The Logging tab's LAN toggle is live: the proxy reads its policy per request.
             proxy?.updatePolicy(.init(logLocal: true, logLAN: config.loggingLanClients))
+            // The hardware toggle is live too. A flip to true can only originate from the
+            // Status tab's Enable/Install button (nothing else writes that field), so honoring
+            // it with installAndStart stays inside the opt-in rule; false stops the child.
+            if config.hardwareStatsEnabled != oldValue.hardwareStatsEnabled {
+                if config.hardwareStatsEnabled {
+                    Task { @MainActor in await hardware.installAndStart() }
+                } else {
+                    hardware.stop()
+                }
+            }
         }
     }
     @Published var phase: ServerPhase = .stopped
@@ -206,6 +216,9 @@ final class AppModel: ObservableObject {
 
     let server = SplashServer()
     let engine = EngineInstaller()
+    // Hardware stats child-process module (opt-in; see Macmon.swift). Owned here so its life
+    // spans tab switches; the Status tab observes it.
+    let hardware = HardwareSampler()
     @Published var launchedRunConfig: RunConfig?
     var hasPendingChanges: Bool {
         guard let launched = launchedRunConfig else { return false }
@@ -247,7 +260,8 @@ final class AppModel: ObservableObject {
         RunLoop.main.add(logTimer!, forMode: .common)
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
-        ) { _ in
+        ) { [weak self] _ in
+            Task { @MainActor in self?.hardware.stop() }
             if let pid = AppModel.serverKillPID {
                 kill(Int32(pid), SIGTERM)
                 var waited = 0
@@ -268,6 +282,10 @@ final class AppModel: ObservableObject {
         // Retention sweep on launch; day-file names older than the window are deleted.
         SessionLog.purge(dir: sessionLog.dir, retentionDays: config.loggingRetentionDays)
         SessionLog.purge(dir: performanceLog.dir, retentionDays: config.loggingRetentionDays)
+
+        // A saved "enabled" means the user already consented; start() resolves only and can
+        // never download — if macmon vanished since, the card falls back to its prompt.
+        if config.hardwareStatsEnabled { hardware.start() }
 
         engineVersion = engine.installedVersion
         engine.step = EngineInstaller.isInstalled ? .ready : .idle
@@ -758,6 +776,7 @@ final class AppModel: ObservableObject {
     func stop() {
         pollTask?.cancel()
         pollTask = nil
+        hardware.pollDriven = false   // no poll → the macmon stream self-drives the history
         proxy?.stop()
         proxy = nil
         frontedEnginePort = nil
@@ -813,6 +832,8 @@ final class AppModel: ObservableObject {
         pollTask?.cancel()
         pollTick = 0
         hfCacheCountdown = 0
+        // The hardware chart joins this clock while the server runs (see HardwareSampler).
+        hardware.pollDriven = true
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -883,6 +904,8 @@ final class AppModel: ObservableObject {
                     )
                     self.history.append(sample)
                     if self.history.count > 480 { self.history.removeFirst(self.history.count - 480) }
+                    // The hardware history rides this exact tick — see HardwareSampler.pollDriven.
+                    self.hardware.recordPollTick()
                     self.currentStage = stage
                     // Performance logging rides this poll: the same /status data the Status
                     // tab shows, written every Nth tick. No extra requests to the engine.

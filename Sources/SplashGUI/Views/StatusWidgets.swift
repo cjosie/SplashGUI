@@ -350,17 +350,34 @@ struct OptionalNumberField<Number: BinaryInteger & LosslessStringConvertible>: V
     }
 }
 
-struct TimeSeriesChart: View {
+/// Rolling multi-series line chart. Generic over the sample type: the Status page uses it for
+/// /status samples (with the prefill/generation stage strip below the plot) and for macmon
+/// hardware samples (no strip — hardware has no request stages). Each series scales to the
+/// p90 of its own values, so units (W, °C, %, tok/s) can mix freely on one canvas.
+struct TimeSeriesChart<S>: View {
     struct SeriesDef {
         let name: String
         let color: Color
-        let extract: (StatusSample) -> Double?
+        let extract: (S) -> Double?
         let format: (Double) -> String
+        // Session peak beside the live value in the legend (the call site owns the window —
+        // see HardwareSampler.MacmonMaxima). Nil = legend shows the live value only.
+        var peakValue: Double? = nil
+        // Fixed top of the axis for this series. Set = the line is drawn against a real scale
+        // (idle sits at the bottom, 100 % means 100 %); nil = the old p90-of-own-values
+        // auto-scaling, which keeps slow-drifting series (temperature) legible.
+        var fullScale: Double? = nil
     }
 
-    let samples: [StatusSample]
+    let samples: [S]
     let defs: [SeriesDef]
+    // Present = the bottom stage strip and its legend render; nil = plain chart.
+    var stages: ((S) -> SampleStage?)? = nil
+    // The tooltip is call-site knowledge (cadence, window, what gaps mean), not chart mechanics.
+    var helpText: String = ""
 
+    // Always reserved, even without a stage strip: both Status charts must share the exact
+    // plot height (170 − 20) or their baselines sit a few pixels apart when stacked.
     private let bracketHeight: CGFloat = 20
 
     var body: some View {
@@ -374,6 +391,13 @@ struct TimeSeriesChart: View {
                     grid.addLine(to: CGPoint(x: size.width, y: y))
                     ctx.stroke(grid, with: .color(.secondary.opacity(0.12)), lineWidth: 1)
                 }
+                // The 4th line: the data floor. Zero maps to 0.96 of the plot (values climb
+                // through 0.92 of headroom above it), so without this the idle baselines of
+                // every series float unexplained just above the bottom edge.
+                var baseline = Path()
+                baseline.move(to: CGPoint(x: 0, y: plotH * 0.96))
+                baseline.addLine(to: CGPoint(x: size.width, y: plotH * 0.96))
+                ctx.stroke(baseline, with: .color(.secondary.opacity(0.25)), lineWidth: 1)
                 guard samples.count > 1 else { return }
                 let span = CGFloat(Double(max(1, samples.count - 1)))
                 let xAt = { (i: Int) in CGFloat(Double(i)) / span * size.width }
@@ -382,7 +406,7 @@ struct TimeSeriesChart: View {
                     let vals = samples.map(def.extract)
                     let present = vals.compactMap { $0 }
                     guard !present.isEmpty else { continue }
-                    let scale = p90(present)
+                    let scale = def.fullScale ?? p90(present)
                     guard scale > 0 else { continue }
                     var path = Path()
                     var started = false
@@ -417,16 +441,19 @@ struct TimeSeriesChart: View {
                 ForEach(defs, id: \.name) { def in
                     HStack(spacing: 4) {
                         Circle().fill(def.color).frame(width: 7, height: 7)
-                        Text("\(def.name) \(currentText(def))")
+                        Text(def.peakValue.map { "\(def.name) \(currentText(def)) · peak \(def.format($0))" }
+                             ?? "\(def.name) \(currentText(def))")
                             .foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
-                stageLegend
+                if stages != nil { stageLegend }
             }
             .font(.caption)
         }
-        .help("Rolling window (8 min at 2s cadence) of /status samples taken only while the server is actively prefilling or decoding; idle periods leave gaps. Each line scales to the 90th percentile of its own values so bursts don't flatten the rest. The strip below shows request stages: orange prefill, green generation.")
+        .help(helpText.isEmpty
+              ? "Rolling window of samples. Each line scales to the 90th percentile of its own values so bursts don't flatten the rest."
+              : helpText)
     }
 
     private var stageLegend: some View {
@@ -446,22 +473,38 @@ struct TimeSeriesChart: View {
     private func drawBracket(ctx: GraphicsContext, width: CGFloat, plotH: CGFloat) {
         let stripY = plotH + 3
         let stripH = bracketHeight - 6
-        guard samples.count > 1 else { return }
+        guard let stages, samples.count > 1 else { return }
         let span = CGFloat(Double(max(1, samples.count - 1)))
         let xAt = { (i: Int) in CGFloat(Double(i)) / span * width }
         let segWidth = width / span
 
+        // One fill per CONTIGUOUS RUN of the same stage, not per sample: adjacent
+        // semi-transparent rects always show a seam (overlapping alpha paints darker,
+        // exact butt joins paint lighter). A run is one rect, so it is one flat color.
+        var runs: [(stage: SampleStage, from: Int, through: Int)] = []
+        var open: (stage: SampleStage, from: Int)?
         for (i, s) in samples.enumerated() {
-            guard let stage = s.stage else { continue }
+            guard let stage = stages(s) else {
+                if let o = open { runs.append((o.stage, o.from, i - 1)); open = nil }
+                continue
+            }
+            if let o = open, o.stage == stage { continue }
+            if let o = open { runs.append((o.stage, o.from, i - 1)) }
+            open = (stage, i)
+        }
+        if let o = open { runs.append((o.stage, o.from, samples.count - 1)) }
+
+        for r in runs {
             let color: Color
-            switch stage {
+            switch r.stage {
             case .prefill: color = .orange
             case .decode: color = .green
             }
-            let x = xAt(i)
-            let w = max(1.5, segWidth)
-            let rect = CGRect(x: x, y: stripY, width: w, height: stripH)
-            ctx.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(color.opacity(0.8)))
+            let x0 = xAt(r.from)
+            // Extend by one sample width so the run covers its last sample's slice too.
+            let x1 = max(xAt(r.through) + segWidth, x0 + 2)
+            let rect = CGRect(x: x0, y: stripY, width: x1 - x0, height: stripH)
+            ctx.fill(Path(rect), with: .color(color.opacity(0.8)))
         }
     }
 
