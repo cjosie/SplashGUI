@@ -115,7 +115,7 @@ struct RootView: View {
             Circle()
                 .fill(phaseColor)
                 .frame(width: 9, height: 9)
-            Text(phaseLabel)
+            Text(enginePrefix + phaseLabel)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -123,6 +123,17 @@ struct RootView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background(.bar)
+        .help("Splash engine " + (model.engineVersion ?? "not installed") + ", "
+              + (EngineInstaller.currentIsExternal
+                 ? "adopted from the Homebrew install"
+                 : "downloaded and managed by the app")
+              + ", at " + EngineInstaller.currentLink.path + ".")
+    }
+
+    // The engine's identity lives on this bar, not in a status card: the version reads at a
+    // glance, which install is in use answers on hover.
+    private var enginePrefix: String {
+        model.engineVersion.map { "Engine \($0) " } ?? ""
     }
 
     private var phaseColor: Color {

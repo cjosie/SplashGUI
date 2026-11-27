@@ -29,6 +29,12 @@ final class AppModel: ObservableObject {
     @Published var loadProgress: Double?
     @Published var loadStage: String = ""
     @Published var currentStage: SampleStage?
+    // Last non-zero context gauge reading, kept so the toolbar bar doesn't reset to 0 when
+    // the model is idle — the gauge only updates while requests run, so it holds the last
+    // real value until the next one arrives.
+    @Published var lastContextUsedTokens: Int?
+    @Published var lastContextUsedFraction: Double?
+    @Published var hfCacheBytes: Int?
     @Published var engineStep: EngineInstaller.Step = .idle
     @Published var engineProgress: Double = 0
     @Published var engineVersion: String?
@@ -208,6 +214,7 @@ final class AppModel: ObservableObject {
     private var client: SplashClient { SplashClient(port: frontedEnginePort ?? config.run.port) }
     private var pollTask: Task<Void, Never>?
     private var pollTick = 0
+    private var hfCacheCountdown = 0
     private var logTimer: Timer?
     // Session logging. When the serve is fronted, the proxy holds the PUBLIC port and the
     // engine runs on `frontedEnginePort`; status polling goes direct.
@@ -690,6 +697,8 @@ final class AppModel: ObservableObject {
                 }
             }
             self.phase = .starting
+            self.lastContextUsedTokens = nil
+            self.lastContextUsedFraction = nil
             let profile = self.currentAutoProfile
             do {
                 var run = self.config.run.effective(using: profile)
@@ -761,6 +770,8 @@ final class AppModel: ObservableObject {
             AppModel.serverKillPID = nil
             phase = .stopped
             status = nil
+            lastContextUsedTokens = nil
+            lastContextUsedFraction = nil
             draftAcceptance = nil
             effectiveModel = nil
             currentStage = nil
@@ -776,6 +787,8 @@ final class AppModel: ObservableObject {
             AppModel.serverKillPID = nil
             self.phase = .stopped
             self.status = nil
+            self.lastContextUsedTokens = nil
+            self.lastContextUsedFraction = nil
             self.draftAcceptance = nil
             self.effectiveModel = nil
             self.currentStage = nil
@@ -799,6 +812,7 @@ final class AppModel: ObservableObject {
     private func startPolling() {
         pollTask?.cancel()
         pollTick = 0
+        hfCacheCountdown = 0
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -811,8 +825,27 @@ final class AppModel: ObservableObject {
                         self.weightsRefreshedThisRun = true
                         self.refreshModelSizeCache(force: true)
                     }
+                    // The HF cache walk costs ~18 ms over a few hundred blobs — too much for the
+                    // main actor once a second. Off-main, on a slow cadence: that cache only
+                    // changes when a model is pulled.
+                    if self.hfCacheCountdown <= 0 {
+                        self.hfCacheCountdown = 15
+                        // Awaiting a detached value keeps the walk off the main actor without
+                        // handing `self` to a @Sendable closure; the write stays on the main actor.
+                        let bytes = await Task.detached(priority: .utility) {
+                            MachineInfo.hfCacheBytes()
+                        }.value
+                        self.hfCacheBytes = bytes
+                    }
+                    self.hfCacheCountdown -= 1
                     let snap = await self.client.fetchStatus()
                     self.status = snap
+                    if let used = snap?.contextUsedTokens, used > 0 {
+                        self.lastContextUsedTokens = used
+                        // Keep the last fraction if this poll lacks one — otherwise the held
+                        // tokens would render with a zero bar.
+                        self.lastContextUsedFraction = snap?.contextUsedFraction ?? self.lastContextUsedFraction
+                    }
                     if let model = snap?.instanceModel { self.effectiveModel = model }
                     // Custom IDs have no app-side profile — remember what Splash granted so the
                     // Auto fields show it on the next launch at once. Only write on change:

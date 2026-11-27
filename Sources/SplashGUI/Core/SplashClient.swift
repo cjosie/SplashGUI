@@ -85,11 +85,56 @@ struct StatusSnapshot {
         return active * block
     }
     var kvResidentBytes: Int? { int("kv", "resident_backing_bytes") }
-    var stateBytes: Int? { int("state", "bytes") }
-    var stateEntries: Int? { int("state", "entries") }
     var queued: Int? { int("scheduler", "queued") }
     var prefilling: Int? { int("scheduler", "prefilling") }
     var decoding: Int? { int("scheduler", "decoding") }
+
+    // memory_actual — engine-side allocated/current/peak.
+    var memActualAllocated: Int? { int("memory_actual", "allocated_bytes") }
+    var memActualCurrent: Int? { int("memory_actual", "current_bytes") }
+    var memActualPeak: Int? { int("memory_actual", "peak_bytes") }
+
+    // memory_governor — charged vs the hard budget, plus backpressure state.
+    var govLimit: Int? { int("memory_governor", "limit_bytes") }
+    var govCharged: Int? { int("memory_governor", "charged_bytes") }
+    var govHeadroom: Int? { int("memory_governor", "headroom_bytes") }
+    var govGrowthAllowed: Bool? { self[["memory_governor", "growth_allowed"]] as? Bool }
+    var govDeniedReservations: Int? { int("memory_governor", "denied_reservations") }
+    var govSystemPressure: String? { string("memory_governor", "system_pressure") }
+
+    // The engine's per-account budget usage — the chunks the Splash budget bar segments by.
+    struct GovernorAccount {
+        let name: String
+        let currentBytes: Int
+    }
+    var govAccounts: [GovernorAccount] {
+        guard let list = self[["memory_governor", "accounts"]] as? [[String: Any]] else { return [] }
+        return list.compactMap { entry in
+            guard let name = entry["name"] as? String else { return nil }
+            let bytes: Int?
+            if let d = entry["current_bytes"] as? Double { bytes = Int(d) }
+            else if let i = entry["current_bytes"] as? Int { bytes = Int(i) }
+            else { bytes = nil }
+            guard let b = bytes else { return nil }
+            return GovernorAccount(name: name, currentBytes: b)
+        }
+    }
+
+    // kv_spill is null when nothing is spilled; expose the raw value so a future fill shows.
+    var kvSpill: String? {
+        guard let v = self[["memory_plan", "budget", "kv_spill"]] else { return nil }
+        if let s = v as? String { return s }
+        if let i = v as? Int { return String(i) }
+        if let d = v as? Double { return String(Int(d)) }
+        return nil
+    }
+
+    // Disk (SSD tier).
+    var diskUsed: Int? { int("disk", "used_bytes") }
+    var diskLimit: Int? { int("disk", "limit_bytes") }
+    var diskWrittenLastHour: Int? { int("disk", "written_last_hour_bytes") }
+    var diskPersistent: Bool? { self[["disk", "persistent"]] as? Bool }
+
 }
 
 final class SplashClient {

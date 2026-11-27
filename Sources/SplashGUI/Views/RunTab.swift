@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct RunTab: View {
     @EnvironmentObject var model: AppModel
     @State private var showAddLocal = false
+    @State private var clearStatus: String?
 
     var body: some View {
         // The server controls (Start/Stop, port, chips, context slot) live in the custom
@@ -136,8 +137,19 @@ struct RunTab: View {
             LabeledField("SSD cache", autoAwareText($model.config.run.maxCacheDisk, model.autoCacheText), width: 120)
                 .disabled(model.config.run.auto)
                 .help("SSD cache for KV pages and GDN states, e.g. 16G; 0 turns it off. With Auto on, the engine sizes it: a quarter of the volume's free space, up to 32G. A 64K context costs 2.0 GiB of pages here plus a 152 MiB state. The cache does not raise the context limit. Free disk on this volume: \(MachineInfo.gb(MachineInfo.freeDisk)).")
-            Toggle("Keep SSD cache across restarts", isOn: $model.config.run.persistentCache)
-                .help("Write the SSD tier to ~/Library/Caches/Splash/prefix-cache instead of a temporary directory, so a project you come back to restores its prefix rather than prefilling it again. Needs an SSD cache above 0.")
+            HStack(spacing: 12) {
+                Toggle("Keep SSD cache across restarts", isOn: $model.config.run.persistentCache)
+                    .help("Write the SSD tier to ~/Library/Caches/Splash/prefix-cache instead of a temporary directory, so a project you come back to restores its prefix rather than prefilling it again. Needs an SSD cache above 0.")
+                Button("Clear SSD cache…") { confirmClearCache() }
+                    .disabled(model.phase == .ready || model.phase == .starting)
+                    .help("Deletes the persistent SSD cache at ~/Library/Caches/Splash/prefix-cache — cached KV pages and GDN states, rebuilt on the next run. Stop the server first: the engine holds the cache open.")
+                if let clearStatus {
+                    Text(clearStatus)
+                        .font(.caption2)
+                        .foregroundStyle(clearStatus.hasPrefix("Could not") ? .red : .secondary)
+                }
+                Spacer()
+            }
             HStack(spacing: 6) {
                 Text("KV cache")
                     .lineLimit(1)
@@ -205,6 +217,24 @@ struct RunTab: View {
                     .help("Serve a GGUF file or model directory already on this Mac — no Hugging Face download.")
                 Spacer()
             }
+        }
+    }
+
+    private func confirmClearCache() {
+        let size = SSDCache.usage().total
+        let alert = NSAlert()
+        alert.messageText = "Clear the SSD cache?"
+        alert.informativeText = size > 0
+            ? "This deletes \(MachineInfo.gb(size)) of cached KV pages and GDN states at ~/Library/Caches/Splash/prefix-cache. The next run re-prefills from scratch."
+            : "The persistent cache at ~/Library/Caches/Splash/prefix-cache is already empty."
+        alert.addButton(withTitle: "Clear")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try SSDCache.clear()
+            clearStatus = "SSD cache cleared (\(MachineInfo.gb(size)))"
+        } catch {
+            clearStatus = "Could not clear the SSD cache: \(error.localizedDescription)"
         }
     }
 

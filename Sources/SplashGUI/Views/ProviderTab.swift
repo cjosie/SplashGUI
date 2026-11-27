@@ -93,7 +93,7 @@ struct ProviderTab: View {
                 Text("Max Output Tokens")
                     .lineLimit(1)
                     .frame(width: 112, alignment: .leading)
-                OptionalIntField(value: $model.config.sampling.maxTokens, placeholder: "unlimited")
+                OptionalNumberField(value: $model.config.sampling.maxTokens, placeholder: "unlimited", fallback: 4096)
                     .disabled(!client.carries(.maxTokens))
                     .opacity(client.carries(.maxTokens) ? 1 : 0.4)
                 Spacer()
@@ -103,7 +103,7 @@ struct ProviderTab: View {
                 Text("Seed")
                     .lineLimit(1)
                     .frame(width: 112, alignment: .leading)
-                OptionalUInt64Field(value: $model.config.sampling.seed, placeholder: "random")
+                OptionalNumberField(value: $model.config.sampling.seed, placeholder: "random", fallback: 42)
                     .disabled(!client.carries(.seed))
                     .opacity(client.carries(.seed) ? 1 : 0.4)
                 Spacer()
@@ -248,6 +248,11 @@ struct ProviderTab: View {
 
 // One sampling row: label (112 pt, shared so the fields align) + numeric text field, greyed
 // when the selected client cannot carry the value.
+// Local draft text, committed on Enter or focus loss — deliberately not TextField(value:format:).
+// While the server runs, the 1s status poll republishes AppModel, and every redraw re-parses a
+// formatted field editor mid-keystroke: a half-typed value came back as a bare integer ("0.7" → 7)
+// and the caller's clamp then pinned it to the range ceiling, which is why temperature showed 2.
+// Editing while stopped was fine only because nothing was repainting the field.
 private struct SamplingFieldRow: View {
     let label: String
     @Binding var value: Double
@@ -255,20 +260,56 @@ private struct SamplingFieldRow: View {
     let enabled: Bool
     let help: String
 
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
     var body: some View {
         HStack(spacing: 10) {
             Text(label)
                 .lineLimit(1)
                 .frame(width: 112, alignment: .leading)
-            TextField("", value: $value, format: .number.precision(.fractionLength(0...digits)))
+            TextField("", text: $draft)
                 .labelsHidden()
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 90)
                 .monospacedDigit()
                 .disabled(!enabled)
                 .opacity(enabled ? 1 : 0.4)
+                .focused($focused)
+                .onSubmit(commit)
+                .onChange(of: focused) { _, editing in
+                    if !editing { commit() }
+                }
             Spacer()
         }
         .help(help)
+        .onAppear { draft = Self.text(value, digits: digits) }
+        // Focused means the typing belongs to the user; otherwise the field follows the model,
+        // since model switches, card resets and per-model profiles all rewrite these values.
+        .onChange(of: value) { _, new in
+            if !focused { draft = Self.text(new, digits: digits) }
+        }
+    }
+
+    private func commit() {
+        let typed = draft.trimmingCharacters(in: .whitespaces)
+                            .replacingOccurrences(of: ",", with: ".")
+        guard let parsed = Double(typed) else {
+            draft = Self.text(value, digits: digits)   // not a number: restore the current value
+            return
+        }
+        value = parsed                                 // the caller's binding clamps to its range
+        draft = Self.text(value, digits: digits)
+    }
+
+    // "1", "0.95", "0.7" — trailing zeros trimmed, so the display matches what the formatted
+    // field used to show (fractionLength 0...digits).
+    private static func text(_ v: Double, digits: Int) -> String {
+        let s = String(format: "%.\(digits)f", v)
+        guard digits > 0, s.contains(".") else { return s }
+        var out = Substring(s)
+        while out.last == "0" { out = out.dropLast() }
+        if out.last == "." { out = out.dropLast() }
+        return String(out)
     }
 }

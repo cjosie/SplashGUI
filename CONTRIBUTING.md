@@ -38,8 +38,8 @@ Sources/SplashGUI/
     ├── RunTab.swift           # Model & Server + Engine + log pane
     ├── LoggingTab.swift       # session + performance logging, storage stats, live tail
     ├── ProviderTab.swift      # client picker, LAN-host toggle, sampling, config preview/copy/save
-    ├── StatusTab.swift        # memory bar, headline cards, chart, metric grid
-    └── StatusWidgets.swift    # title-bar controls, chips, fields, MemoryBar/TimeSeriesChart
+    ├── StatusTab.swift        # slim RAM/Disk bars, Splash budget bar, chart, metric cards
+    └── StatusWidgets.swift    # title-bar controls, chips, SegmentBar, fields, TimeSeriesChart
 scripts/
 ├── bundle-app.sh              # dev bundle; --release = Developer ID + notarized DMG
 ├── release.sh                 # tag + push + gh release create (maintainers)

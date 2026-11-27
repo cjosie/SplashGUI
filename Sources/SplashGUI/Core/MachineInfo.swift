@@ -62,6 +62,23 @@ enum MachineInfo {
         return (attrs[.systemFreeSize] as? Int64).map(Int.init)
     }
 
+    // Capacity of the volume hosting the cache and the model store. "/" and the Data volume
+    // share one APFS container, so free and total read the same pool the cache grows in.
+    static var totalDisk: Int? {
+        guard let attrs = try? FileManager.default.attributesOfFileSystem(forPath: "/") else { return nil }
+        return (attrs[.systemSize] as? Int64).map(Int.init)
+    }
+
+    // The Hugging Face download cache: where weights actually live, with Splash's model store
+    // symlinking into it. Measured with directorySize, whose dedupe by resolved path is essential
+    // here — blobs are shared across snapshot links, so a naive walk counted 100.8 GB for a
+    // 57.9 GB cache. Costs ~18 ms over 540 blobs, so callers should not do it per frame.
+    static var hfHubDir: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/huggingface/hub")
+    }
+
+    static func hfCacheBytes() -> Int? { directorySize(hfHubDir) }
+
     // The address to hand LAN clients: IPv4 on an active non-loopback interface, preferring
     // en0 (the built-in Wi-Fi on every Apple Silicon Mac), then any other "en*" (Thunderbolt
     // Ethernet/docks), then anything else. Skips link-local 169.254.x addresses — those mean

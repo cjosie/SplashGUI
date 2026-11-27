@@ -116,21 +116,26 @@ struct ServerToolbarControls: View {
             }
             .help("Covers the model download (if needed) and engine loading")
         } else if model.phase == .ready, let snap = model.status, let max = snap.maxContextTokens, max > 0 {
-            let used = snap.contextUsedFraction ?? 0
+            // The gauge only moves while requests run; between runs it would reset to 0 and
+            // stop answering "how full is context?". Hold the last non-zero reading until
+            // the next one arrives.
+            let liveUsed = snap.contextUsedTokens ?? 0
+            let used = liveUsed > 0 ? liveUsed : (model.lastContextUsedTokens ?? 0)
+            let fraction = liveUsed > 0 ? (snap.contextUsedFraction ?? 0) : (model.lastContextUsedFraction ?? 0)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text("Context")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(String(snap.contextUsedTokens ?? 0))/\(String(max / 1024))K")
+                    Text("\(String(used))/\(String(max / 1024))K")
                         .font(.caption)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
-                ProgressView(value: used)
+                ProgressView(value: fraction)
                     .progressViewStyle(.linear)
-                    .tint(used > 0.9 ? .orange : .accentColor)
+                    .tint(fraction > 0.9 ? .orange : .accentColor)
             }
             .help("Tokens held by active requests' KV out of the granted window (server pool gauge, updated on the 2s status poll). While the server starts, this shows the download and load progress instead.")
         } else {
@@ -168,6 +173,86 @@ struct ServerToolbarControls: View {
         case .switching: return "Activating the engine…"
         default: return "Installing the engine…"
         }
+    }
+}
+
+// A slim segmented bar in the macOS storage-bar shape: caption row, thin proportional bar,
+// legend carrying the real numbers. A non-zero segment narrower than `minPoints` is widened to
+// that floor so it stays visible as a sliver instead of vanishing; the shortfall comes off the
+// largest segment so the bar still fills exactly one row. Precision lives in the legend, not the
+// widths - and the floor is in points, not a percentage, so a segment ~100x smaller than its
+// neighbour stays ~100x smaller instead of being floored up to equal it.
+struct SegmentBar: View {
+    struct Segment {
+        let name: String
+        let bytes: Int?
+        let color: Color
+    }
+
+    let label: String
+    let trailing: String
+    let segments: [Segment]
+    let total: Int
+    let help: String
+
+    private let minPoints: CGFloat = 3
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(trailing)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            GeometryReader { geo in
+                HStack(spacing: 2) {
+                    ForEach(Array(segmentWidths(in: geo.size.width).enumerated()), id: \.offset) { i, pt in
+                        Rectangle()
+                            .fill(segments[i].color)
+                            .frame(width: max(0, pt))
+                    }
+                }
+            }
+            .frame(height: 8)
+            .clipShape(Capsule())
+            // Tight on purpose: side by side, the four-item Disk legend needs ~387pt of content
+            // and the bar is ~409pt wide at the minimum window width, so an adaptive grid or the
+            // budget bar's 14pt gap both push it onto a second line. The scale factor lets it
+            // shrink a hair at that extreme instead of truncating a number.
+            HStack(spacing: 8) {
+                ForEach(Array(segments.enumerated()), id: \.offset) { _, s in
+                    HStack(spacing: 3) {
+                        Circle().fill(s.color).frame(width: 7, height: 7)
+                        Text("\(s.name) \(MachineInfo.gb(s.bytes))")
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+        }
+        // Fill whatever column the bar is given, so two of them in an HStack split it evenly.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(help)
+    }
+
+    private func segmentWidths(in width: CGFloat) -> [CGFloat] {
+        var ws = segments.map { width * CGFloat($0.bytes ?? 0) / CGFloat(max(1, total)) }
+        var deficit: CGFloat = 0
+        for i in ws.indices where ws[i] > 0 && ws[i] < minPoints {
+            deficit += minPoints - ws[i]
+            ws[i] = minPoints
+        }
+        if deficit > 0, let largest = ws.indices.max(by: { ws[$0] < ws[$1] }) {
+            ws[largest] = max(0, ws[largest] - deficit)
+        }
+        return ws
     }
 }
 
@@ -211,95 +296,57 @@ struct SliderNumberField: View {
     }
 }
 
-struct OptionalIntField: View {
-    @Binding var value: Int?
+// Numeric field with an unset state, editing a local draft for the same reason as
+// SamplingFieldRow: while the server runs, the 1s status poll repaints a TextField(value:format:)
+// mid-keystroke. Empty text commits nil — that is what "unlimited" and "random" mean here — while
+// text that is not a number restores the current value rather than silently unsetting it.
+struct OptionalNumberField<Number: BinaryInteger & LosslessStringConvertible>: View {
+    @Binding var value: Number?
     let placeholder: String
+    var fallback: Number
+
+    @State private var draft = ""
+    @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: 8) {
-            TextField(placeholder, value: $value, format: .number.grouping(.never))
+            TextField(placeholder, text: $draft)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 130)
                 .disabled(value == nil)
                 .opacity(value == nil ? 0.4 : 1)
-            Toggle("Set", isOn: Binding(
-                get: { value != nil },
-                set: { value = $0 ? (value ?? 4096) : nil }
-            ))
-            .labelsHidden()
-            .toggleStyle(.checkbox)
-        }
-    }
-}
-
-struct OptionalUInt64Field: View {
-    @Binding var value: UInt64?
-    let placeholder: String
-
-    var body: some View {
-        HStack(spacing: 8) {
-            TextField(placeholder, value: $value, format: .number.grouping(.never))
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 130)
-                .disabled(value == nil)
-                .opacity(value == nil ? 0.4 : 1)
-            Toggle("Set", isOn: Binding(
-                get: { value != nil },
-                set: { value = $0 ? (value ?? 42) : nil }
-            ))
-            .labelsHidden()
-            .toggleStyle(.checkbox)
-        }
-    }
-}
-
-struct MemoryBar: View {
-    let modelBytes: Int?
-    let otherBytes: Int?
-    let freeBytes: Int?
-    let totalBytes: Int
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            GeometryReader { geo in
-                HStack(spacing: 2) {
-                    Rectangle()
-                        .fill(Color.blue)
-                        .frame(width: max(0, geo.size.width * frac(modelBytes)))
-                    Rectangle()
-                        .fill(Color.orange)
-                        .frame(width: max(0, geo.size.width * frac(otherBytes)))
-                    Rectangle()
-                        .fill(Color.secondary.opacity(0.25))
-                        .frame(maxWidth: .infinity)
+                .focused($focused)
+                .onSubmit(commit)
+                .onChange(of: focused) { _, editing in
+                    if !editing { commit() }
                 }
-            }
-            .frame(height: 16)
-            .clipShape(Capsule())
-            HStack(spacing: 14) {
-                legend("model (charged)", modelBytes, .blue)
-                legend("other apps + macOS", otherBytes, .orange)
-                legend("free", freeBytes, Color.secondary.opacity(0.25))
-                Spacer()
-                Text("\(MachineInfo.gb(totalBytes)) total")
-                    .foregroundStyle(.secondary)
-            }
-            .font(.caption)
+            Toggle("Set", isOn: Binding(
+                get: { value != nil },
+                set: { value = $0 ? (value ?? fallback) : nil }
+            ))
+            .labelsHidden()
+            .toggleStyle(.checkbox)
         }
-        .help("Unified-memory breakdown. Model = physical pages charged to the server process tree right now. Weights are memory-mapped and fault in on use; idle weights sit as instantly-reclaimable file cache, so this grows during decode and shrinks when idle. Other = everything else in use. Free = available now.")
+        .onAppear { draft = text }
+        .onChange(of: value) { _, _ in
+            if !focused { draft = text }
+        }
     }
 
-    private func frac(_ bytes: Int?) -> CGFloat {
-        guard let bytes, totalBytes > 0 else { return 0 }
-        return max(0, min(1, CGFloat(bytes) / CGFloat(totalBytes)))
-    }
+    private var text: String { value.map { String(describing: $0) } ?? "" }
 
-    private func legend(_ name: String, _ bytes: Int?, _ color: Color) -> some View {
-        HStack(spacing: 4) {
-            Circle().fill(color).frame(width: 7, height: 7)
-            Text("\(name) \(MachineInfo.gb(bytes))")
-                .foregroundStyle(.secondary)
+    private func commit() {
+        let typed = draft.trimmingCharacters(in: .whitespaces)
+        if typed.isEmpty {
+            value = nil
+            return
         }
+        guard let parsed = Number(typed) else {
+            draft = text
+            return
+        }
+        value = parsed
+        draft = String(describing: parsed)
     }
 }
 
